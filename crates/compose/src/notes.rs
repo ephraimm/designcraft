@@ -45,6 +45,8 @@ pub(crate) struct CellNote {
     pub(crate) label: String,
     pub(crate) note: Arc<Footnote>,
 }
+mod streams;
+pub use streams::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
 
 /// A footnote assigned to a column.
 pub(crate) struct Placed {
@@ -226,7 +228,7 @@ impl SeriesNotes {
             }
             self.numbers[k] = self.num;
             self.num = self.num.saturating_add(1);
-            sub.notes.insert(self.refs[k], o.label(self.numbers[k], false));
+            sub.notes.insert(self.refs[k], if o.ref_hidden { String::new() } else { o.label(self.numbers[k], false) });
             sub.note_formats.insert(self.refs[k], (o.ref_position, o.ref_char_style.clone()));
         }
     }

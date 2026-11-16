@@ -14,7 +14,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ## Alpha blocker (the core-workflow gate in [roadmap.md](roadmap.md#alpha-gate))
 
-Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side, and report overflow. Native files retain the series; IDML writes all notes using its one footnote setup with a warning. Anchored commentary routing (#2872) and inset-column geometry (#2873) remain separate work.
+Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side, and report overflow. Native files retain the series; IDML writes all notes using its one footnote setup with a warning. Anchored commentary streams (#2872) fit first parts on their anchor pages, route continuations independently of the body thread, and report stream overflow separately from body overset. Inset-column geometry and stream catchwords remain #2873.
 
 ### 0. Primary Text Frame autoflow adds pages users can't delete (F) · **ALPHA BLOCKER**
 - **Missing:** fixes to Smart Text Reflow on the Primary Text Frame, which users report adding
@@ -152,8 +152,9 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Have:** cell footnotes share the column-foot area with body notes; row groups reserve their
   notes before fitting, and repeated headers/footers do not duplicate notes (#2611). Cell notes
   are numbered in the story's sequence (#2612).
-- **Still missing:** cell-footnote insertion (#2613),
-  listing (#2614), and editing existing cell notes on the canvas. The caret currently resolves
+- **Have:** insertion at a table-cell caret (#2613), listing in reading order (#2614), and
+  command editing/deletion through explicit table, row and column addresses.
+- **Still missing:** editing existing cell notes on the canvas. The caret currently resolves
   footnote ids only in the host story, not in its table cells. With Span Footnotes Across
   Columns in a multi-column frame, a cell note first placed in a later column does not rewind
   earlier columns overlapping its enlarged area; this needs the story-level relayout path.
