@@ -5118,6 +5118,64 @@ fn drop_cap_in_right_to_left_paragraphs_is_on_the_right() {
 }
 
 #[test]
+fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    // Lowercase x has a flat top below the font's declared Latin cap height.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'x').unwrap());
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
+fn right_to_left_drop_word_keeps_size_baseline_and_two_line_indent() {
+    const FAMILY: &str = "DC Test Hebrew Keep Size";
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(FAMILY, &['ה', 'ד', ' ']).unwrap());
+    let first_word = "הדה";
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs {
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        align: Some(Align::Right),
+        drop_cap_keep_size: Some(true),
+        ..drop_cap(2, 3)
+    };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    // Own formatting, 120% of the body, must survive without a fit-to-lines scale.
+    story.format_chars(0..first_word.len(), |f| f.over.size = Some(12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 2);
+    let dc: Vec<_> = lines[0].glyphs.iter().filter(|g| g.byte < first_word.len()).collect();
+    assert_eq!(dc.len(), 3);
+    for g in &dc {
+        assert!((g.sy * g.face.upem - 12.0).abs() < 0.01, "size {}", g.sy * g.face.upem);
+        assert!(g.y.abs() < 0.01, "baseline offset {}", g.y);
+    }
+    // The word space after it stays: the lines beside it start where the next word does.
+    let width: f64 = lines[0].glyphs.iter().filter(|g| g.byte <= first_word.len()).map(|g| g.adv).sum();
+    assert!(width > dc.iter().map(|g| g.adv).sum::<f64>(), "the word space after the drop word is kept");
+    let right =
+        |line: &Line| line.glyphs.iter().filter(|g| g.visible && g.byte > first_word.len()).map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+    assert!((right(lines[0]) - (300.0 - width)).abs() < 0.01);
+    assert!((right(lines[1]) - (300.0 - width)).abs() < 0.01, "line 2 right {} width {width}", right(lines[1]));
+    assert!((right(lines[2]) - 300.0).abs() < 0.01, "line 3 right {}", right(lines[2]));
+}
+
+#[test]
 fn right_to_left_drop_cap_keeps_marks_on_their_letters() {
     const FAMILY: &str = "DC Test Hebrew Drop Marks";
     designcraft_fonts::FontDb::global().add_font(
