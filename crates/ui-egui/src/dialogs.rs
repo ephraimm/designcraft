@@ -8121,7 +8121,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 14] = [
+pub const JUSTIFY_ATTRS: [&str; 15] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -8135,6 +8135,7 @@ pub const JUSTIFY_ATTRS: [&str; 14] = [
     "singleWordJustify",
     "composer",
     "kashidas",
+    "hebrewLetterExtension",
     "koreanCharBreaks",
 ];
 
@@ -8425,6 +8426,7 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
     });
     for (label, key, text, default) in [
         ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
+        ("Extend Hebrew Letters:", "hebrewLetterExtension", "In justified Hebrew text", false),
         ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
     ] {
         ui.horizontal(|ui| {
