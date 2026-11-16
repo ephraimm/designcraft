@@ -5594,3 +5594,32 @@ fn hebrew_list_idml_warns_once_and_writes_arabic() {
     let warning = "Hebrew list numbering is written as Arabic numerals (1, 2, 3, 4...): IDML has no documented Hebrew list numbering format.";
     assert_eq!(warnings.iter().filter(|w| w.as_str() == warning).count(), 1, "{warnings:?}");
 }
+
+#[test]
+fn idml_note_series_export_keeps_all_notes_and_warns() {
+    use designcraft_doc::{FootnoteOptions, NoteSeries};
+    let mut d = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d
+        .add_text_frame(
+            designcraft_doc::SpreadRef::Doc(0),
+            designcraft_doc::geom::Rect::new(72.0, 72.0, 400.0, 600.0),
+            lid,
+            "Body",
+            designcraft_doc::ParaFormat::default(),
+        )
+        .unwrap();
+    d.note_series.push(NoteSeries { id: 1, name: "Sources".into(), options: FootnoteOptions::default() });
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(0, "Ordinary", Default::default());
+    let id = st.insert_note(st.len(), "Source", Default::default()).unwrap();
+    st.note_mut(id).unwrap().series = 1;
+    let (bytes, warnings) = crate::export_idml_report(&d, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("one footnote setup")));
+    let back = import_idml(&bytes).unwrap();
+    let notes: Vec<_> = back.stories.values().flat_map(|st| &st.notes).collect();
+    assert_eq!(notes.len(), 2);
+    assert!(notes.iter().all(|n| n.series == 0));
+    assert!(notes.iter().any(|n| n.text.text == "Ordinary"));
+    assert!(notes.iter().any(|n| n.text.text == "Source"));
+}

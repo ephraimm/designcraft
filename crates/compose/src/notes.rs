@@ -62,12 +62,12 @@ pub(crate) struct Placed {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct NoteMetrics {
     /// First and last baselines (the first one includes the First Baseline offset).
-    first: f64,
-    last: f64,
+    pub(super) first: f64,
+    pub(super) last: f64,
     /// Leading of the first line: its baseline's distance below the previous footnote's last.
-    lead: f64,
+    pub(super) lead: f64,
     /// Descent of the last line.
-    descent: f64,
+    pub(super) descent: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -123,7 +123,7 @@ pub(crate) struct SplitPlan {
     m: NoteMetrics,
 }
 
-pub(crate) type NoteSnapshot = (u32, Option<usize>, usize, Option<Carry>);
+type SeriesSnapshot = (u32, Option<usize>, usize, Option<Carry>);
 type Part = (Arc<ComposedStory>, NoteMetrics);
 type CacheKey = (NoteSource, String, u64, bool, bool, Option<usize>, Vec<(u64, u64)>);
 
@@ -135,7 +135,9 @@ pub struct NoteNumber {
     pub key: Option<usize>,
 }
 
-pub(crate) struct Notes {
+pub(super) struct SeriesNotes {
+    series: u64,
+    members: Vec<bool>,
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
     /// Number of each footnote (assigned when its paragraph is shaped).
@@ -150,9 +152,6 @@ pub(crate) struct Notes {
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
-    /// Room a frame's earlier columns had to leave for spanning notes placed in a later column;
-    /// kept across re-lays so the columns before the reference make room on the next pass.
-    floor: HashMap<usize, f64>,
 }
 
 /// Whether composition can number footnotes directly or inside a paragraph's table.
@@ -160,17 +159,14 @@ pub(crate) fn has_notes_or_tables(story: &Story) -> bool {
     !story.notes.is_empty() || (0..story.paras.len()).any(|pi| story.para_table(pi).is_some())
 }
 
-impl Notes {
-    /// The story's notes. `start` is where numbering begins: a table cell continues the
-    /// numbering of the story holding the table, so its notes take their place in the story's
-    /// one sequence; anything else starts from the document's numbering for this story.
-    pub fn continuing(doc: &Document, story: &Story, start: Option<NoteNumber>) -> Notes {
+impl SeriesNotes {
+    pub(super) fn new(doc: &Document, story: &Story, series: u64, nested: bool, start: Option<NoteNumber>) -> Self {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
-        let start = match start {
-            Some(n) => n,
-            None => NoteNumber { num: if has_notes_or_tables(story) { doc.footnote_start(story.id) } else { 1 }, key: None },
-        };
-        Notes {
+        let start =
+            start.unwrap_or(NoteNumber { num: if has_notes_or_tables(story) { doc.footnote_series_start(story.id, series) } else { 1 }, key: None });
+        Self {
+            series,
+            members: story.notes.iter().map(|n| nested || doc.note_series_id(n.series) == series).collect(),
             numbers: vec![start.num; refs.len()],
             refs,
             num: start.num,
@@ -179,30 +175,19 @@ impl Notes {
             cache: HashMap::new(),
             carry: None,
             notes: story.notes.clone(),
-            span: doc.footnote_options.span_columns,
-            floor: HashMap::new(),
+            span: doc.note_options(series).span_columns,
         }
     }
 
-    /// Numbering after the story's last reference, for the next cell or continuation to carry on.
-    pub fn next_number(&self) -> NoteNumber {
-        NoteNumber { num: self.num, key: self.key }
+    fn owns(&self, k: usize) -> bool {
+        self.members.get(k).copied().unwrap_or(false)
     }
 
-    /// Where the numbering of a table cell's notes begins: the host story's next number, or a
-    /// fresh count when the cell is on a different page, spread or section and numbering restarts.
-    pub fn cell_start(&self, doc: &Document, page: Option<usize>) -> NoteNumber {
-        let o = &doc.footnote_options;
-        match restart_key(doc, page) {
-            Some(key) if self.key != Some(key) => NoteNumber { num: o.start_at, key: Some(key) },
-            _ => NoteNumber { num: self.num, key: self.key },
+    fn column<'a>(&self, mut column: NoteColumn<'a>) -> NoteColumn<'a> {
+        if self.span {
+            column.width = column.frame.columns().into_iter().reduce(|a, b| a.union(b)).map_or(column.width, |r| r.width());
         }
-    }
-
-    /// Carry on numbering from `at` (the host story continues after its table's cells).
-    pub fn resume(&mut self, at: NoteNumber) {
-        self.num = at.num;
-        self.key = at.key;
+        column
     }
 
     /// Whether a note placed in (fi, col) shares the footnote area of column (`fi`, `ci`).
@@ -222,11 +207,19 @@ impl Notes {
 
     /// Number the references in a paragraph (shaped on `page`) and hand their labels to the shaper.
     pub fn number_refs(&mut self, doc: &Document, prange: Range<usize>, page: Option<usize>, sub: &mut SubstCtx) {
-        let o = &doc.footnote_options;
-        let key = restart_key(doc, page);
+        let o = doc.note_options(self.series);
+        let key = page.and_then(|p| match o.restart {
+            NoteRestart::Never => None,
+            NoteRestart::Page => Some(p),
+            NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
+            NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
+        });
         let a = self.refs.partition_point(|&b| b < prange.start);
         let b = self.refs.partition_point(|&b| b < prange.end);
         for k in a..b {
+            if !self.owns(k) {
+                continue;
+            }
             if o.restart != NoteRestart::Never && key != self.key {
                 self.key = key;
                 self.num = o.start_at;
@@ -234,9 +227,8 @@ impl Notes {
             self.numbers[k] = self.num;
             self.num = self.num.saturating_add(1);
             sub.notes.insert(self.refs[k], o.label(self.numbers[k], false));
+            sub.note_formats.insert(self.refs[k], (o.ref_position, o.ref_char_style.clone()));
         }
-        sub.note_position = o.ref_position;
-        sub.note_style = (o.ref_char_style != designcraft_doc::NO_CHAR_STYLE).then(|| o.ref_char_style.clone());
     }
 
     /// Footnote indices referenced by a line's glyphs.
@@ -246,6 +238,7 @@ impl Notes {
         let mut seen = HashSet::new();
         for g in glyphs.iter().filter(|g| g.ch == FOOTNOTE_REF && g.len > 0) {
             if let Ok(k) = self.refs.binary_search(&g.byte)
+                && self.owns(k)
                 && seen.insert(k)
             {
                 v.push(k);
@@ -265,7 +258,7 @@ impl Notes {
     /// `heights` holds the (width, height) of each earlier part; the last part is `w` wide and unbounded.
     fn compose_parts(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions, heights: &[(f64, f64)]) -> Vec<Option<Part>> {
         let Some(note) = self.notes.get(k).cloned() else { return Vec::new() };
-        let o = &doc.footnote_options;
+        let o = doc.note_options(self.series);
         let label = o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true);
         self.compose_note_parts(doc, NoteSource::Story(k), &label, &note, (w, f), opts, heights)
     }
@@ -296,7 +289,7 @@ impl Notes {
         opts: &ComposeOptions,
         heights: &[(f64, f64)],
     ) -> Vec<Option<Part>> {
-        let o = &doc.footnote_options;
+        let o = doc.note_options(self.series);
         let shown = format!("{label}{}", o.separator);
         // Page identity and earlier part areas affect variables and threaded note breaks.
         let key =
@@ -355,7 +348,10 @@ impl Notes {
     }
 
     fn pending(&self, column: NoteColumn<'_>) -> Option<Carry> {
-        self.carry.as_ref().filter(|c| c.fi != column.frame_index || (!self.span && c.col != column.column_index)).cloned()
+        self.carry
+            .as_ref()
+            .filter(|c| column.frame_index > c.fi || (column.frame_index == c.fi && !self.span && column.column_index > c.col))
+            .cloned()
     }
 
     fn remainder(&mut self, doc: &Document, c: &Carry, column: NoteColumn<'_>, opts: &ComposeOptions) -> Option<Part> {
@@ -384,7 +380,7 @@ impl Notes {
         available: f64,
         opts: &ComposeOptions,
     ) -> Option<SplitPlan> {
-        if !available.is_finite() || available <= 0.0 {
+        if !doc.note_options(self.series).allow_split || !available.is_finite() || available <= 0.0 {
             return None;
         }
         let pending = self.pending(column);
@@ -394,7 +390,7 @@ impl Notes {
                 return None;
             }
             let ms = self.metrics(doc, column, before, opts);
-            if stack_height(&ms, doc.footnote_options.space_between) > available {
+            if stack_height(&ms, doc.note_options(self.series).space_between) > available {
                 return None;
             }
             // A second carry would discard the first note's remainder.
@@ -409,7 +405,9 @@ impl Notes {
             (c.k, c.heights, ms, original)
         };
         let offset = ms.last().map_or(0.0, |last| {
-            stack_height(&ms, doc.footnote_options.space_between) - last.descent + doc.footnote_options.space_between + original.1.lead
+            stack_height(&ms, doc.note_options(self.series).space_between) - last.descent
+                + doc.note_options(self.series).space_between
+                + original.1.lead
                 - original.1.first
         });
         let mut h = available - offset;
@@ -425,7 +423,7 @@ impl Notes {
             *heights.get_mut(part)? = (column.width, h);
             let parts = self.compose_parts(doc, k, column.width, column.frame, opts, &heights);
             let (text, m) = parts.get(part).and_then(Clone::clone)?;
-            let total = stack_height(ms.iter().chain(std::iter::once(&m)), doc.footnote_options.space_between);
+            let total = stack_height(ms.iter().chain(std::iter::once(&m)), doc.note_options(self.series).space_between);
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
                 return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, text, m });
             }
@@ -443,13 +441,8 @@ impl Notes {
         self.reserve_metrics(doc, column, extra, &[], opts)
     }
 
-    /// [`Notes::reserve`] with table-cell footnotes added.
-    pub fn reserve_cells(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[CellNote], opts: &ComposeOptions) -> f64 {
-        self.reserve_metrics(doc, column, &[], extra, opts)
-    }
-
     fn reserve_metrics(&mut self, doc: &Document, column: NoteColumn<'_>, own: &[usize], cells: &[CellNote], opts: &ComposeOptions) -> f64 {
-        let o = &doc.footnote_options;
+        let o = doc.note_options(self.series);
         let (space_between, space_before) = (o.space_between, o.space_before);
         let mut ms = self.metrics(doc, column, own, opts);
         for n in cells {
@@ -459,23 +452,7 @@ impl Notes {
             }
             ms.push(self.compose_note(doc, n.source, &n.label, &n.note, (column.width, column.frame), opts).1);
         }
-        let r = if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before };
-        if self.span { r.max(self.floor.get(&column.frame_index).copied().unwrap_or(0.0)) } else { r }
-    }
-
-    /// After spanning notes were placed in column `col` of frame `fi`: whether a line of an earlier
-    /// column now runs into their area. The area is then remembered for the frame, to re-lay it.
-    pub fn earlier_columns_collide(&mut self, lines: &[crate::Line], fi: usize, col: usize, cols: &[Rect], reserve: f64) -> bool {
-        if !self.span || col == 0 || reserve <= self.floor.get(&fi).copied().unwrap_or(0.0) + 0.01 {
-            return false;
-        }
-        let hit = lines
-            .iter()
-            .any(|l| (l.column as usize) < col && cols.get(l.column as usize).is_some_and(|c| l.baseline + l.descent > c.y1 - reserve + 0.01));
-        if hit {
-            self.floor.insert(fi, reserve);
-        }
-        hit
+        if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before }
     }
 
     pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
@@ -488,7 +465,7 @@ impl Notes {
             return;
         }
         let Some(note) = self.notes.get(k).cloned() else { return };
-        let label = doc.footnote_options.label(self.numbers.get(k).copied().unwrap_or(doc.footnote_options.start_at), true);
+        let label = doc.note_options(self.series).label(self.numbers.get(k).copied().unwrap_or(doc.note_options(self.series).start_at), true);
         self.placed.push(Placed { source: NoteSource::Story(k), note, label, part, fi: column.frame_index, col: column.column_index, m, text });
     }
 
@@ -525,40 +502,6 @@ impl Notes {
         self.carry = plan.remainder.then_some(Carry { k: plan.k, heights: plan.heights, fi: column.frame_index, col: column.column_index });
     }
 
-    /// Body text can end before its note. Visit each following area at most once.
-    pub fn finish_carry(
-        &mut self,
-        doc: &Document,
-        frames: &[FrameSpec],
-        cols: &[Vec<Rect>],
-        opts: &ComposeOptions,
-        out: &mut ComposedStory,
-        end: usize,
-    ) {
-        let Some(start) = self.carry.clone() else { return };
-        for (fi, (frame, columns)) in frames.iter().zip(cols).enumerate().skip(start.fi) {
-            for (ci, _) in columns.iter().enumerate().take(if self.span { 1 } else { columns.len() }) {
-                if fi == start.fi && (self.span || ci <= start.col) {
-                    continue;
-                }
-                let Some(area) = self.area(columns, ci) else { continue };
-                let column = NoteColumn { frame_index: fi, column_index: ci, width: area.width(), frame };
-                if self.carry.is_none() {
-                    return;
-                }
-                let available = area.height() - doc.footnote_options.space_before;
-                if self.reserve(doc, column, &[], opts) <= area.height() + 0.01 {
-                    self.place_line(doc, column, &[], None, opts);
-                } else if let Some(plan) = self.split_plan(doc, column, &[], available, opts) {
-                    self.place_line(doc, column, &[], Some(plan), opts);
-                }
-            }
-        }
-        if self.carry.is_some() && out.overset_at.is_none() {
-            out.overset_at = Some(end);
-        }
-    }
-
     /// Place a table cell's footnote at the foot of `column`.
     pub fn place_cell(&mut self, doc: &Document, n: &CellNote, column: NoteColumn<'_>, opts: &ComposeOptions) {
         if self.placed.iter().any(|p| p.source == n.source) {
@@ -582,7 +525,7 @@ impl Notes {
         if self.placed.is_empty() {
             return;
         }
-        let o = &doc.footnote_options;
+        let o = doc.note_options(self.series);
         let mut groups: Vec<(usize, usize)> = self.placed.iter().map(|p| (p.fi, if self.span { 0 } else { p.col })).collect();
         groups.dedup();
         groups.sort_unstable();
@@ -621,6 +564,9 @@ impl Notes {
                         NoteSource::Story(k) | NoteSource::Cell { k, .. } => k,
                     },
                     column: p.col as u32,
+                    series: self.series,
+                    reference_baseline: 0.0,
+                    overflow: false,
                     label: p.label.clone(),
                     origin: Point::new(col.x0, y),
                     rect: Rect::new(col.x0, y0, col.x1, y1),
@@ -633,6 +579,9 @@ impl Notes {
         }
     }
 }
+
+mod series;
+pub(crate) use series::{NoteSnapshot, Notes, SplitPlan as SeriesSplitPlan};
 
 /// The placed footnote with id `id`: (frame index, footnote).
 pub fn find_note(cs: &ComposedStory, id: u64) -> Option<(usize, &PlacedNote)> {
@@ -689,3 +638,6 @@ pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64
         None => Some((fi, n.origin.x, n.origin.y + 10.0, 9.0, 3.0)),
     }
 }
+
+mod page_margins;
+pub(crate) use page_margins::stack_page_margins;

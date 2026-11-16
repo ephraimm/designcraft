@@ -48,7 +48,7 @@ use designcraft_geom::{Affine, Point, Rect};
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
-use crate::notes::{NoteColumn, NoteSnapshot, Notes, SplitPlan};
+use crate::notes::{NoteColumn, NoteSnapshot, Notes, SeriesSplitPlan as SplitPlan};
 pub use crate::notes::{NoteNumber, find_note, find_note_part, hit_note, hit_note_with, note_caret, note_text};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
@@ -319,6 +319,11 @@ pub struct PlacedNote {
     /// Cell-note indices must not be used to index the host story's notes.
     pub id: u64,
     pub index: usize,
+    pub series: u64,
+    /// Baseline of the body line holding the reference, in frame inner space.
+    pub reference_baseline: f64,
+    /// Margin text runs below the page bottom margin.
+    pub overflow: bool,
     pub column: u32,
     /// The number shown.
     pub label: String,
@@ -345,6 +350,8 @@ pub struct ComposedStory {
     /// Numbering after this story and its nested table cells, for the next cell to continue.
     /// Set after composition even when only nested cells contain footnotes.
     pub notes_after: Option<NoteNumber>,
+    /// Layout warnings that leave the main story overset position unchanged.
+    pub warnings: Vec<String>,
 }
 
 impl ComposedStory {
@@ -1263,6 +1270,14 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
 /// objects ([`wrap`]).
 /// Anchored frames are composed where their host story places them (unless `opts` places them).
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
+    let mut out = compose_story_unstacked(doc, sid, opts);
+    notes::stack_page_margins(doc, sid, opts, &mut out);
+    out
+}
+
+/// Document layout before the final cross-story margin collision pass. Keeping this separate
+/// lets that pass compose neighbours without recursively asking them to stack against us.
+pub(crate) fn compose_story_unstacked(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
     compose_story_at(doc, sid, opts, 0, &mut HashMap::new())
 }
 
@@ -2166,10 +2181,9 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     // A note that doesn't fit whole splits, keeping its first part with this line. Without a
     // split, a column's first line is set even when its own notes don't fit (as before).
-    if doc.footnote_options.allow_split
-        && !capped
+    if !capped
         && baseline + desc > col.y1 - reserve + 0.01
-        && let Some(plan) = notes.split_plan(doc, note_column, &line_notes, col.y1 - (baseline + desc) - doc.footnote_options.space_before, opts)
+        && let Some(plan) = notes.split_plan(doc, note_column, &line_notes, col.y1 - (baseline + desc), opts)
     {
         return LineFit::Ready(line_notes, Some(plan));
     }
@@ -3275,7 +3289,7 @@ fn compose_run(
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
-    let mut notes = Notes::continuing(doc, story, opts.notes_start);
+    let mut notes = Notes::continuing(doc, story, frames, opts.notes_start);
     let mut note_snaps: Vec<NoteSnapshot> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
@@ -3306,7 +3320,7 @@ fn compose_run(
     let (mut pass, start) = reuse::Pass::new(before, story, plain, reuse::Start { pi, cur, list_counter, info }, &mut out, &mut styles_tab);
     (pi, cur, list_counter, info) = (start.pi, start.cur, start.list_counter, start.info);
     snaps.extend((0..pi).map(|_| Snapshot::take(&out, &cur, &list_counter)));
-    note_snaps.resize(pi, (notes.num, notes.key, 0, None));
+    note_snaps.resize(pi, notes.snapshot());
     'paras: while pi <= np {
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
@@ -3315,7 +3329,7 @@ fn compose_run(
         snaps.truncate(pi);
         snaps.push(snap);
         note_snaps.truncate(pi);
-        note_snaps.push((notes.num, notes.key, notes.placed.len(), notes.carry.clone()));
+        note_snaps.push(notes.snapshot());
         info.truncate(pi);
         // Whether nothing is left to lay: the rest of the story is in place, copied from its
         // composition before an edit, or that composition turned out not to hold for this one.
@@ -3753,7 +3767,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         } else {
             marks.get_or_insert_with(|| story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect())
         };
-        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras, anchors);
+        vertical_justify(ft, f, spanned, doc, grid_paras, anchors);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -3834,6 +3848,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
             ft.decos.extend(rects.into_iter().map(|rect| Deco { rect, color: f.opts.column_rule_color.clone(), tint, ..Deco::default() }));
         }
     }
+    notes.finish_margins(doc, story, frames, opts, out);
     out.styles = styles_tab;
     out.notes_after = Some(notes.next_number());
     mark_keep_violations(doc, story, out);
@@ -4166,10 +4181,8 @@ fn rewind(
     if let Some(s) = snaps.get(j) {
         s.restore(out, cur, list_counter);
     }
-    if let Some((num, key, placed, carry)) = note_snaps.get(j) {
-        (notes.num, notes.key) = (*num, *key);
-        notes.placed.truncate(*placed);
-        notes.carry = carry.clone();
+    if let Some(snapshot) = note_snaps.get(j) {
+        notes.restore(snapshot);
     }
 }
 
@@ -6286,14 +6299,7 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
 /// `spanned`: a paragraph spans the frame's columns, so the lines move together. `anchors`: the
 /// story byte of each anchored object's mark, by object index.
 /// `grid_aligns`: each paragraph's Align to Baseline Grid setting.
-fn vertical_justify(
-    ft: &mut FrameText,
-    f: &FrameSpec,
-    spanned: bool,
-    notes: &designcraft_doc::FootnoteOptions,
-    grid_aligns: &[GridAlign],
-    anchors: &[usize],
-) {
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, doc: &Document, grid_aligns: &[GridAlign], anchors: &[usize]) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
@@ -6311,8 +6317,8 @@ fn vertical_justify(
         let note_top = ft
             .notes
             .iter()
-            .filter(|n| spanned || notes.span_columns || n.column == c)
-            .map(|n| n.rect.y0 - notes.space_before)
+            .filter(|n| spanned || doc.note_options(n.series).span_columns || n.column == c)
+            .map(|n| n.rect.y0 - doc.note_options(n.series).space_before)
             .fold(f64::INFINITY, f64::min);
         let limit = note_top.min(f.area.y1);
         let tables = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(f64::NEG_INFINITY, f64::max);
