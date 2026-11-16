@@ -1,0 +1,30 @@
+# Fork-only (ephraimm/designcraft `integration`; never upstreamed): builds the macOS app from
+# integration (upstream main + our open PRs) as a downloadable artifact. Unsigned (ad-hoc), nothing
+# published or released. Runs on GitHub's standard macos-15 runner, free for public repositories.
+# Switch `uses:` to storytold/craft-common-actions/...@main once https://github.com/storytold/craft-common-actions/pull/263 lands.
+name: Integration app
+
+on:
+  push:
+    branches: [integration]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-app
+  cancel-in-progress: true
+
+jobs:
+  app:
+    uses: ephraimm/craft-common-actions/.github/workflows/gate.yml@42e79d293e9b15a13b90c247075b610d4e038557
+    with:
+      os: '["macos-15"]'
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      targets: ""
+      tools: ""
+      dev-debug: ""
+      timeout-minutes: 180
+      command: packaging/macos/package.sh --arch aarch64
+      artifact-name: designcraft-integration
+      artifact-path: dist/release/*
