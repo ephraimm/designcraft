@@ -23,14 +23,19 @@ attr_set! {
         /// character style `drop_cap_style` ("" or `[None]`: the text's own formatting).
         drop_cap_lines: u32 = 0,
         drop_cap_chars: u32 = 0,
+        /// When above 0, use the paragraph's first `drop_cap_words` words instead of
+        /// `drop_cap_chars` characters. Words are runs of non-whitespace, so combining marks
+        /// and maqaf-joined words stay whole.
+        drop_cap_words: u32 = 0,
         drop_cap_style: String = String::new(),
         /// Align Left Edge: the drop cap's ink starts at the indent (its first letter's left side
         /// bearing is taken off), and the lines beside it start where its advance ends.
         drop_cap_align_left: bool = true,
         /// Scale for Descenders (kept and round-tripped; doesn't change the layout).
         drop_cap_scale_descenders: bool = false,
-        /// Keep Size: the drop cap keeps its own point size, its top level with the first line's tops;
-        /// the lines beside it are still indented by its width.
+        /// Keep Size: the drop cap keeps its own point size. A cap taller than the body hangs
+        /// from the first line's tops; one no taller sits on the first baseline like any word.
+        /// The lines beside it are still indented by its width.
         drop_cap_keep_size: bool = false,
         /// Nested styles, in order from the paragraph start.
         nested_styles: Vec<NestedStyle> = Vec::new(),

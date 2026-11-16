@@ -1716,6 +1716,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
                 drop_grid,
                 drop_align,
                 pp.drop_cap_keep_size,
+                pp.word_space_desired,
                 drop_tabs,
             );
             let width = |j: usize| {
@@ -2895,6 +2896,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         drop_grid,
         drop_align,
         pp.drop_cap_keep_size,
+        pp.word_space_desired,
         (&pp.tabs[..], drop_tab_indent),
     );
     // List labels take the default super/subscript settings.
@@ -5679,24 +5681,46 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
     }
 }
 
-/// Drop caps are at most this many lines and characters (larger values are capped).
+/// Drop caps are at most this many lines, characters or words (larger values are capped).
 pub const MAX_DROP_CAP_LINES: u32 = 25;
 pub const MAX_DROP_CAP_CHARS: u32 = 150;
+pub const MAX_DROP_CAP_WORDS: u32 = 25;
 
-/// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_chars` characters
-/// (code points, as InDesign counts them, spaces included), extended to the end of the grapheme
-/// cluster they end in so a letter keeps its combining marks; all of them in a shorter paragraph.
-/// `prange.start` when it has none: no lines or characters, or vertical text (which sets no drop
-/// caps).
+/// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_words` runs of
+/// non-whitespace when above zero, otherwise its first `drop_cap_chars` code points (spaces
+/// included). Extend to the end of the grapheme cluster so a letter keeps its combining marks;
+/// take the whole paragraph when shorter. Counts are capped at their respective maxima.
+/// Return `prange.start` with no lines, neither words nor characters, or vertical text.
 fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool) -> usize {
     use unicode_segmentation::UnicodeSegmentation as _;
-    if vertical || pp.drop_cap_lines == 0 || pp.drop_cap_chars == 0 {
+    if vertical || pp.drop_cap_lines == 0 || (pp.drop_cap_chars == 0 && pp.drop_cap_words == 0) {
         return prange.start;
     }
     let Some(para) = text.get(prange.clone()) else { return prange.start };
     let para = para.trim_end_matches('\n');
-    let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
-    let end = para.char_indices().nth(n).map_or(para.len(), |(i, _)| i);
+    let end = if pp.drop_cap_words > 0 {
+        let mut remaining = pp.drop_cap_words.min(MAX_DROP_CAP_WORDS);
+        let mut in_word = false;
+        para.char_indices()
+            .find_map(|(i, ch)| {
+                if ch.is_whitespace() {
+                    if in_word {
+                        remaining -= 1;
+                        if remaining == 0 {
+                            return Some(i);
+                        }
+                    }
+                    in_word = false;
+                } else {
+                    in_word = true;
+                }
+                None
+            })
+            .unwrap_or(para.len())
+    } else {
+        let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
+        para.char_indices().nth(n).map_or(para.len(), |(i, _)| i)
+    };
     prange.start + para.grapheme_indices(true).map(|(i, _)| i).find(|i| *i >= end).unwrap_or(para.len())
 }
 
@@ -5741,8 +5765,9 @@ fn drop_cap_stroke_top(outline: &designcraft_geom::kurbo::BezPath) -> Option<f64
 /// steps apart. With `align_left` its ink starts at the indent (see [`DropCap::lsb`]). Tabs inside
 /// it advance to the stops of `tabs` (stops and the start-side indent; in right-to-left paragraphs
 /// both measured from the column's right edge). Spaces right after it join it at its size without
-/// widening it. With `keep_size`, it keeps its own size, hangs from the first line's tops, and those
-/// spaces count in its width.
+/// widening it. With `keep_size`, it keeps its own size and those spaces count in its width.
+/// A kept drop cap taller than the body hangs from the first line's tops; one no taller sits on
+/// the first baseline like any word.
 #[allow(clippy::too_many_arguments)]
 fn split_drop_cap(
     db: &ScopedFonts<'_>,
@@ -5754,6 +5779,7 @@ fn split_drop_cap(
     grid: Option<f64>,
     align_left: bool,
     keep_size: bool,
+    word_space: f64,
     tabs: (&[designcraft_doc::TabStop], f64),
 ) -> Option<DropCap> {
     let n = glyphs.iter().take_while(|g| g.byte < end).count();
@@ -5765,7 +5791,7 @@ fn split_drop_cap(
     let spaces = glyphs.iter().take_while(|g| g.is_space()).count();
     let mut after: Vec<Glyph> = glyphs.drain(..spaces).collect();
     let end = after.last().map_or(end, |g| g.byte.saturating_add(g.len).max(end));
-    let hebrew = dc.first().is_some_and(|g| ('\u{05D0}'..='\u{05EA}').contains(&g.ch));
+    let hebrew = dc.iter().find(|g| g.ch.is_alphabetic()).is_some_and(|g| ('\u{05D0}'..='\u{05EA}').contains(&g.ch));
     let height = |g: &Glyph| {
         if hebrew {
             let gid = g.face.glyph_for('ה');
@@ -5816,6 +5842,12 @@ fn split_drop_cap(
     let k = if lines == 1 { k.min(1.0) } else { k };
     let k = if k.is_finite() && k > 0.0 { k.min(1000.0) } else { 1.0 };
     for g in dc.iter_mut().chain(after.iter_mut()) {
+        if !g.locked_advance && g.is_word_space() {
+            let advance = g.adv + g.space * (word_space - 1.0);
+            if advance.is_finite() {
+                g.adv = advance;
+            }
+        }
         g.adv *= k;
         g.dx *= k;
         g.dy *= k;
