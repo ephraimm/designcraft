@@ -19,9 +19,11 @@ jobs:
   app:
     uses: ephraimm/craft-common-actions/.github/workflows/gate.yml@42e79d293e9b15a13b90c247075b610d4e038557
     with:
-      os: '["macos-15"]'
+      # Both free standard runners; arm64 often waits on capacity, the Intel leg cross-compiles the
+      # same aarch64 app. Each leg that runs uploads designcraft-integration-<runner>.
+      os: '["macos-15","macos-15-intel"]'
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      targets: ""
+      targets: aarch64-apple-darwin
       tools: ""
       dev-debug: ""
       timeout-minutes: 180
