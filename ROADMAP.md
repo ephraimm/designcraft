@@ -15,6 +15,7 @@
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
 - **2026-11-16** · Hebrew letter numerals (א׳ … ט״ו … תתקצ״ט, with or without geresh and gershayim) number pages, chapters, footnotes, endnotes and lists; IDML writes them as Hebrew Biblical and lists as Arabic with an export warning (#2860, Hebrew half of #1355). No readiness percentage change.
+- **2026-11-16** · `story.lines` reports a story's composed lines for scripts (#2835). No readiness percentage change.
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.
 - **2026-11-13** · Table-cell footnotes share the column-foot stack with body notes (#2611).
   Row-group fitting reserves their height, and repeated headers and footers place each note
