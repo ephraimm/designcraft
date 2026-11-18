@@ -1499,6 +1499,137 @@ fn hyphen_limit_is_a_hard_constraint() {
     }
 }
 
+/// Each paragraph's own text decides, not the story's: a Korean document's English paragraphs
+/// still hyphenate, and a mostly-English story's Korean paragraphs still do not (noted in review
+/// of #1688).
+#[test]
+fn hyphenation_follows_each_paragraph_not_the_story() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    // 이번 통지문은 아래와 같습니다 / an English paragraph that wants hyphenation
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} \u{C544}\u{B798}\u{C640} \u{AC19}\u{C2B5}\u{B2C8}\u{B2E4}";
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let hyphens = |text: &str| {
+        let (d, sid, _) = doc_with(text, rect, para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        // Which paragraph each hyphenated line belongs to: the Korean one is first.
+        lines.iter().filter(|l| l.hyphenated).count()
+    };
+    // The English paragraph in a Korean document still hyphenates: the story is mostly Hangul,
+    // but that paragraph is not.
+    let mixed = format!("{korean}\n{english}");
+    assert!(hyphens(&mixed) > 0, "the English paragraph of a Korean document still hyphenates");
+    // And the Korean paragraph alone invents none.
+    assert_eq!(hyphens(korean), 0, "a Korean paragraph invents no hyphens");
+}
+
+/// The paragraph's *glyphs* decide, not its source text: hidden conditional text is not set, so
+/// it does not get a vote. Reading the source let hidden Korean turn hyphenation off for the
+/// visible English around it (noted in review of #1688).
+#[test]
+fn hidden_text_does_not_decide_whether_a_paragraph_hyphenates() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    // 이번 통지문은 아래와 같습니다 — repeated, so the Hangul outweighs the English after it
+    // (`mostly_hangul` wants at least as many Hangul characters as ASCII letters).
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} \u{C544}\u{B798}\u{C640} \u{AC19}\u{C2B5}\u{B2C8}\u{B2E4} ".repeat(6);
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let text = format!("{korean}{english}");
+
+    let hyphens = |hide: bool| {
+        let (mut d, sid, _) = doc_with(&text, rect, para.clone());
+        d.conditions.push(designcraft_doc::Condition { name: "Draft".into(), color: [255, 0, 0], visible: !hide });
+        let story = d.story_mut(sid).expect("the story is there");
+        let chars = designcraft_doc::CharAttrs { conditions: Some(vec!["Draft".into()]), ..Default::default() };
+        story.chars = vec![
+            designcraft_doc::CharRun { len: korean.len(), format: designcraft_doc::CharFormat { over: chars, ..Default::default() } },
+            designcraft_doc::CharRun { len: english.len(), format: designcraft_doc::CharFormat::default() },
+        ];
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+
+    // Shown, the Hangul outweighs the English and the paragraph is not hyphenated.
+    assert_eq!(hyphens(false), 0, "a visibly Korean paragraph invents no hyphens");
+    // Hidden, the only text set is English, and it hyphenates like any English paragraph.
+    assert!(hyphens(true) > 0, "hidden Korean does not turn hyphenation off for the visible English");
+}
+
+/// `split_drop_cap` takes the drop cap's glyphs out of the vector, so classifying the paragraph
+/// after it ran lost that character's vote: with the Hangul and Latin counts level, dropping one
+/// Hangul character made the paragraph read as Latin and its English words took automatic hyphens
+/// (noted in review). The classification is made before the split.
+#[test]
+fn a_drop_cap_still_counts_when_a_paragraph_is_judged_korean() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    // English long enough that it really does hyphenate in a 90 pt column -- the run
+    // `hidden_text_does_not_decide_whether_a_paragraph_hyphenates` uses for the same reason. A
+    // short run leaves no hyphens whichever way the paragraph is classified, so the test would
+    // pass without testing anything (measured: it did).
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let letters = english.chars().filter(char::is_ascii_alphabetic).count();
+    // One Hangul syllable per Latin letter, so the counts are level -- which `hangul >= latin`
+    // calls Korean, and one character either way decides it.
+    let korean: String = "\u{AC00}\u{B098}\u{B2E4}\u{B77C}\u{B9C8}".chars().cycle().take(letters).collect();
+    assert_eq!(korean.chars().count(), letters, "the two counts are level at {letters}");
+    let text = format!("{korean} {english}");
+
+    let hyphens = |para: ParaAttrs| {
+        let (d, sid, _) = doc_with(&text, rect, para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+    let base = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+
+    // Level counts read as Korean, so nothing hyphenates.
+    assert_eq!(hyphens(base.clone()), 0, "level counts read as Korean");
+    // The paragraph opens on a Hangul character, so that character is the drop cap. It is still
+    // set, just larger, so the answer must not change.
+    let with_cap = ParaAttrs { drop_cap_lines: Some(2), drop_cap_chars: Some(1), ..base.clone() };
+    assert_eq!(hyphens(with_cap), 0, "a drop cap does not turn the paragraph Latin");
+
+    // And the fixture really is poised on the boundary: one Latin letter more and the English
+    // hyphenates, so the assertions above are not passing for want of any hyphen at all.
+    let tipped = format!("{korean} {english}x");
+    let (d, sid, _) = doc_with(&tipped, rect, base);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(all_lines(&cs).iter().any(|l| l.hyphenated), "one more Latin letter tips it and hyphens appear");
+}
+
+/// A Korean notice leaves its paragraphs at the default English language, so English
+/// hyphenation broke the Latin words Korean particles attach to and the addresses such a document
+/// is full of: `New-` / `s와`, `library.exam-` / `ple.kr` (#1688). The lines may now be looser --
+/// that is the cost of not hyphenating, and what #1691 is about -- but no hyphen is invented
+/// inside those tokens.
+#[test]
+fn korean_text_and_addresses_are_not_hyphenated() {
+    // Narrow enough that every line has to break somewhere.
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    let hyphens_in = |text: &str| {
+        let (d, sid, _) = doc_with(text, rect, para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+
+    // 이번 통지문은 News와 관련된 library.example.kr 주소를 포함합니다
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} News\u{C640} \u{AD00}\u{B828}\u{B41C} library.example.kr \u{C8FC}\u{C18C}\u{B97C} \u{D3EC}\u{D568}\u{D569}\u{B2C8}\u{B2E4}";
+    assert_eq!(hyphens_in(korean), 0, "a Korean paragraph invents no hyphens");
+
+    // An English paragraph holding the same address: the prose still hyphenates, the address does
+    // not, so the protection is about the token and not about turning hyphenation off.
+    let english = "This notice about hyphenation and composition mentions library.example.kr somewhere inside a long sentence";
+    assert!(hyphens_in(english) > 0, "English prose is still hyphenated");
+    let (d, sid, _) = doc_with(english, rect, para.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for l in all_lines(&cs).iter().filter(|l| l.hyphenated) {
+        let upto = &english[..l.range.end.min(english.len())];
+        let token = upto.rsplit(char::is_whitespace).next().unwrap_or("");
+        assert!(!"library.example.kr".starts_with(token) || token.is_empty(), "a hyphen was invented inside the address: {token:?}");
+    }
+}
+
 #[test]
 fn hyphenation_zone_limits_ragged_hyphens() {
     let text = CORPUS.join(" ");
@@ -5066,10 +5197,137 @@ fn drop_cap_counts_code_points_without_splitting_clusters_and_clamps_to_the_para
 }
 
 #[test]
+fn drop_cap_words_override_characters_and_keep_hebrew_marks() {
+    const FAMILY: &str = "DC Test Hebrew Drop Words";
+    let first_words = "אֵלּוּ דְבָרִים";
+    let text = format!("{first_words} {}", "הדה ".repeat(60));
+    let chars: Vec<_> = text.chars().collect();
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(FAMILY, &chars).unwrap());
+    let para = ParaAttrs {
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        align: Some(Align::Right),
+        drop_cap_words: Some(2),
+        ..drop_cap(2, 1)
+    };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let end = first_words.len() + 1;
+    let dropped: Vec<_> = lines[0].glyphs.iter().filter(|g| g.len > 0 && g.y > 1.0).collect();
+    assert!(!dropped.is_empty());
+    assert!(dropped.iter().all(|g| g.byte < end && g.face.family == FAMILY));
+    let mut ranges: Vec<_> = dropped.iter().map(|g| (g.byte, g.byte + g.len)).collect();
+    ranges.sort_unstable();
+    ranges.dedup();
+    let mut covered = 0;
+    for (start, stop) in ranges {
+        assert!(start <= covered, "missing drop-cap bytes before {start}");
+        covered = covered.max(stop);
+    }
+    assert_eq!(covered, end, "both words, their marks and the trailing space are dropped");
+    assert!(lines[0].glyphs.iter().any(|g| g.byte == end && g.y.abs() < 1e-6));
+    // Interior and trailing word spaces obey the same desired spacing before scaling.
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(2.0);
+    let spaced = compose_story(&d, sid, &ComposeOptions::default());
+    for gap in dropped.iter().filter(|g| text.get(g.byte..).is_some_and(|s| s.starts_with(' '))) {
+        let spaced_gap = all_lines(&spaced)[0].glyphs.iter().find(|g| g.byte == gap.byte).unwrap();
+        assert!((spaced_gap.adv - gap.adv * 2.0).abs() < 0.01);
+    }
+}
+
+#[test]
+fn drop_cap_words_end_at_whitespace_and_clamp_to_the_paragraph() {
+    let props = designcraft_doc::ParaProps { drop_cap_lines: 2, drop_cap_words: 2, ..Default::default() };
+    for (text, expected) in [
+        ("  one\t two\u{a0}three", "  one\t two".len()),
+        ("one", 3),
+        ("one two\n", 7),
+        ("one־two three four", "one־two three".len()),
+        ("  \t ", 0),
+        ("one\t ", 3),
+    ] {
+        assert_eq!(super::drop_cap_end(text, 0..text.len(), &props, false), expected);
+    }
+    assert_eq!(super::drop_cap_end("one two", 0..7, &props, true), 0);
+    let props = designcraft_doc::ParaProps { drop_cap_words: u32::MAX, ..props };
+    let text = "word ".repeat(30);
+    assert_eq!(super::drop_cap_end(&text, 0..text.len(), &props, false), 25 * 5 - 1);
+}
+
+#[test]
+fn unplaced_drop_word_is_reported_overset_from_the_paragraph_start() {
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(2, 0) };
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 4.0), para.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, Some(0));
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, None);
+    assert!(all_lines(&cs).iter().any(|line| line.drop_cap.is_some()));
+}
+
+#[test]
+fn drop_word_wider_than_the_column_is_overset() {
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(3, 0) };
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 300.0), para.clone());
+    let wide = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(wide.overset_at, None);
+    let line = all_lines(&wide)[0];
+    let cap = line.drop_cap.unwrap();
+    let indent = text_x(line, cap.end) - line.x0;
+    assert!(indent > 0.0);
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, indent / 2.0, 300.0), para);
+    let narrow = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(narrow.overset_at, Some(0));
+    assert!(all_lines(&narrow).is_empty());
+}
+
+#[test]
+fn drop_cap_words_stop_before_hard_breaks() {
+    let props = designcraft_doc::ParaProps { drop_cap_lines: 2, drop_cap_words: 2, ..Default::default() };
+    for (text, expected) in [("one\u{2028}two three", 3), ("one \u{2028}two", 3), ("one two\u{E002}", 7), ("\u{2028}one two", 0)] {
+        assert_eq!(super::drop_cap_end(text, 0..text.len(), &props, false), expected, "{text:?}");
+    }
+}
+
+#[test]
+fn word_drop_cap_stops_at_a_forced_line_break() {
+    let text = format!("one\u{2028}two three four {LOREM}");
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(2, 1) };
+    let (d, sid, _) = drop_doc(&text, para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines[0].glyphs.iter().any(|g| g.byte == 0 && g.y > 1.0));
+    let two = "one\u{2028}".len();
+    let (line, glyph) = lines.iter().enumerate().find_map(|(i, l)| l.glyphs.iter().find(|g| g.byte == two && g.len > 0).map(|g| (i, g))).unwrap();
+    assert!(line >= 1, "two starts on line {line}; the forced break must survive the drop cap");
+    assert!(glyph.y.abs() < 1e-6, "two must be body text, got y={}", glyph.y);
+}
+
+#[test]
+fn scaled_single_character_drop_cap_indent_ignores_word_spacing() {
+    let (mut d, sid, _) = drop_doc(LOREM, drop_cap(2, 1));
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(1.0);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(2.0);
+    let spaced = compose_story(&d, sid, &ComposeOptions::default());
+    let plain_x = text_x(all_lines(&plain)[1], 1);
+    let spaced_x = text_x(all_lines(&spaced)[1], 1);
+    assert!((plain_x - spaced_x).abs() < 1e-6, "line 2 indent: spacing 1.0={plain_x}, spacing 2.0={spaced_x}");
+}
+
+#[test]
 fn hostile_drop_cap_values_do_not_panic() {
     for (lines, chars) in [(u32::MAX, u32::MAX), (1_000_000, 1), (2, 0), (0, 3)] {
         let (d, sid, _) = drop_doc(LOREM, drop_cap(lines, chars));
         let cs = compose_story(&d, sid, &ComposeOptions::default());
+        if chars == u32::MAX {
+            // The clamped maximum cap is wider than the column and must remain unplaced.
+            assert_eq!(cs.overset_at, Some(0));
+            assert!(all_lines(&cs).is_empty());
+            continue;
+        }
         let g = &cs.frames[0].lines[0].glyphs[0];
         assert!(g.y.is_finite() && g.sy.is_finite() && g.y <= 12.0 * 25.0, "{lines}/{chars}: {}", g.y);
     }
@@ -5115,6 +5373,393 @@ fn drop_cap_in_right_to_left_paragraphs_is_on_the_right() {
         assert!(l.glyphs.iter().filter(|g| g.byte > 0 && g.visible).all(|g| g.x + g.adv <= dc.x + 0.5));
     }
     assert!(lines[2].end_x > 299.0 || lines[2].glyphs.iter().any(|g| g.x + g.adv > 299.0));
+}
+
+#[test]
+fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    // Lowercase z has a flat horizontal top below the font's declared Latin cap height.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z').unwrap());
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
+fn hebrew_body_height_skips_a_quote_in_a_latin_only_face() {
+    const FAMILY: &str = "DC Test Hebrew Quoted Body";
+    const LATIN: &str = "DC Test Latin Body Quote";
+    let db = designcraft_fonts::FontDb::global();
+    let Some(hebrew) = designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z') else { return };
+    let Some(latin) = designcraft_fonts::testing::font_with_glyph(LATIN, &['"'], 'H') else { return };
+    db.add_font(hebrew);
+    db.add_font(latin);
+    let compose = |quote: &str| {
+        let text = format!("הדה {quote}{}", "הדה הדה ".repeat(20));
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        if !quote.is_empty() {
+            let start = "הדה ".len();
+            story.format_chars(start..start + quote.len(), |f| f.over.font_family = Some(LATIN.into()));
+        }
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose("");
+    let quoted = compose("\"");
+    let plain_line = all_lines(&plain)[0];
+    let quoted_line = all_lines(&quoted)[0];
+    let quote = quoted_line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    assert_eq!(quote.face.family, LATIN);
+    assert_eq!(quote.face.glyph_for('ה'), 0);
+    let first = plain_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let after_quote = quoted_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((first.sy - after_quote.sy).abs() < 1e-6, "plain scale {}, quoted scale {}", first.sy, after_quote.sy);
+    assert!((first.y - after_quote.y).abs() < 0.01);
+}
+
+#[test]
+fn hebrew_drop_word_aligns_with_latin_body_cap_height() {
+    const FAMILY: &str = "DC Test Hebrew Drop Latin Body";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' ', 'a'], 'z').unwrap());
+    let text = format!("הדה {}", "aaa aaa ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    let body_cap_top = body.y - body.face.cap_height * body.sy;
+    assert!((top(dropped) - body_cap_top).abs() < 0.01, "drop top {}, body cap top {body_cap_top}", top(dropped));
+    assert!((top(dropped) - top(body)).abs() > 0.1, "the body's ink top must differ from its declared cap height");
+}
+
+#[test]
+fn hebrew_presentation_form_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Presentation Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['\u{FB2E}', 'ה', 'ד', ' '], 'z').unwrap());
+    let text = format!("\u{FB2E}דה {}", "הדה הדה הדה ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "\u{FB2E}דה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
+fn hebrew_drop_word_aligns_top_strokes_instead_of_serifs() {
+    use designcraft_geom::kurbo::{Line as OutlineLine, ParamCurve as _};
+
+    const FAMILY: &str = "DC Test Hebrew Drop Stroke";
+    let db = designcraft_fonts::FontDb::global();
+    // v's sides rise above its centre, standing in for serifs above a horizontal stroke.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'v').unwrap());
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let outline = db.outline(&g.face, g.gid);
+        let ink = designcraft_geom::Shape::bounding_box(&*outline);
+        let x = (ink.x0 + ink.x1) / 2.0;
+        let column = OutlineLine::new((x, ink.y0 - 1.0), (x, ink.y1 + 1.0));
+        let top_y = outline
+            .segments()
+            .flat_map(|seg| seg.intersect_line(column).into_iter().map(move |hit| seg.eval(hit.segment_t).y))
+            .filter(|y| y.is_finite())
+            .min_by(f64::total_cmp)
+            .unwrap();
+        assert!(top_y - ink.y0 > 1.0, "the fixture's centre top must be below its ink top");
+        g.y + top_y * g.sy
+    };
+    let ink_top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop stroke {}, body stroke {}", top(dropped), top(body));
+    assert!((ink_top(dropped) - ink_top(body)).abs() > 0.1, "ink tops must differ when strokes align");
+}
+
+#[test]
+fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_intersecting_lines() {
+    const FAMILY: &str = "DC Test Hebrew Keep Size";
+    // A horizontal top makes ink-top alignment equivalent to stroke-top alignment.
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z').unwrap());
+    let first_word = "הדה";
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs {
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        align: Some(Align::Right),
+        drop_cap_keep_size: Some(true),
+        ..drop_cap(2, 3)
+    };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    // Own formatting, 120% of the body, must survive without a fit-to-lines scale.
+    story.format_chars(0..first_word.len(), |f| f.over.size = Some(12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 2);
+    let dc: Vec<_> = lines[0].glyphs.iter().filter(|g| g.byte < first_word.len()).collect();
+    assert_eq!(dc.len(), 3);
+    for g in &dc {
+        assert!((g.sy * g.face.upem - 12.0).abs() < 0.01, "size {}", g.sy * g.face.upem);
+    }
+    // Its top is level with the body's tops, so it sits lower than the baseline by what it is taller.
+    let db = designcraft_fonts::FontDb::global();
+    let top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    let body = lines[0].glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    assert!(body.sy < dc[0].sy, "the drop word is larger than the body");
+    assert!((top(dc[0]) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dc[0]), top(body));
+    // The word space after it stays: the lines beside it start where the next word does.
+    let width: f64 = lines[0].glyphs.iter().filter(|g| g.byte <= first_word.len()).map(|g| g.adv).sum();
+    assert!(width > dc.iter().map(|g| g.adv).sum::<f64>(), "the word space after the drop word is kept");
+    let right =
+        |line: &Line| line.glyphs.iter().filter(|g| g.visible && g.byte > first_word.len()).map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+    assert!((right(lines[0]) - (300.0 - width)).abs() < 0.01);
+    assert!((right(lines[1]) - (300.0 - width)).abs() < 0.01, "line 2 right {} width {width}", right(lines[1]));
+    assert!((right(lines[2]) - 300.0).abs() < 0.01, "line 3 right {}", right(lines[2]));
+}
+
+#[test]
+fn keep_size_drop_cap_trailing_space_follows_word_spacing() {
+    let text = "Hello body words ".repeat(30);
+    let (mut d, sid, _) = drop_doc(&text, ParaAttrs { drop_cap_keep_size: Some(true), ..drop_cap(2, 5) });
+    let normal = compose_story(&d, sid, &ComposeOptions::default());
+    let normal_lines = all_lines(&normal);
+    let gap = normal_lines[0].glyphs.iter().find(|g| g.byte == 5).unwrap().adv;
+    assert!(gap > 0.0);
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(2.0);
+    let spaced = compose_story(&d, sid, &ComposeOptions::default());
+    let spaced_lines = all_lines(&spaced);
+    let width = |line: &Line| line.drop_cap.unwrap().rect.width();
+    assert!((width(spaced_lines[0]) - width(normal_lines[0]) - gap).abs() < 0.01);
+    let body_gap = spaced_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
+    let normal_body_gap = normal_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
+    assert!((body_gap - normal_body_gap - gap).abs() < 0.01);
+}
+
+#[test]
+fn s2c_inline_fixed_leading_pitch() {
+    let text = format!("{LOREM} {LOREM}");
+    let (mut d, sid, _) = drop_doc(&text, ParaAttrs::default());
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().format_chars(20..25, |f| f.over.size = Some(13.0));
+    let after = compose_story(&d, sid, &ComposeOptions::default());
+    let pitches = |cs: &ComposedStory| all_lines(cs).windows(2).map(|l| l[1].baseline - l[0].baseline).collect::<Vec<_>>();
+    eprintln!("inline 1.3x pitches before {:?}, after {:?}", pitches(&before), pitches(&after));
+    assert!(pitches(&after).iter().all(|p| (*p - 12.0).abs() < 0.01));
+}
+
+#[test]
+fn s2c_note_drop_word_clears_next_line() {
+    let text = "הדה הדה הדה ".repeat(40);
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs::default());
+    let fmt = ParaFormat {
+        para: ParaAttrs {
+            direction: Some(designcraft_doc::TextDirection::RightToLeft),
+            align: Some(Align::Right),
+            drop_cap_words: Some(1),
+            drop_cap_scale: Some(1.6),
+            ..drop_cap(2, 0)
+        },
+        chars: designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(15.1)), ..Default::default() },
+        ..Default::default()
+    };
+    d.story_mut(sid).unwrap().insert_note(5, &text, fmt);
+    let note = std::sync::Arc::make_mut(&mut d.story_mut(sid).unwrap().notes[0]);
+    note.text.format_chars(0.."הדה".len(), |f| f.over.size = Some(16.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let note = &cs.frames[0].notes[0];
+    let lines = all_lines(&note.text);
+    let dc = lines[0].drop_cap.unwrap();
+    let db = designcraft_fonts::FontDb::global();
+    let ink = |g: &PlacedGlyph, line: &Line| {
+        let r = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        Rect::new(g.x + r.x0 * g.sx, line.baseline + g.y + r.y0 * g.sy, g.x + r.x1 * g.sx, line.baseline + g.y + r.y1 * g.sy)
+    };
+    for a in lines[0].glyphs.iter().filter(|g| g.byte < dc.end && g.visible && g.len > 0) {
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            for b in line.glyphs.iter().filter(|g| g.visible && g.len > 0) {
+                assert!(ink(a, lines[0]).intersect(ink(b, line)).area() < 0.01, "drop word intersects note line {}", i + 1);
+            }
+        }
+        if a.byte < "הדה".len() {
+            assert!((a.sy * a.face.upem - 16.0).abs() < 0.01);
+        }
+    }
+}
+
+#[test]
+fn s2c_ratio_shift_baselines_and_indent() {
+    let text = "הדה הדה הדה ".repeat(40);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..Default::default() };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    {
+        let st = d.story_mut(sid).unwrap();
+        st.paras[0].para.drop_cap_words = Some(1);
+        st.paras[0].para.drop_cap_lines = Some(2);
+        st.paras[0].para.drop_cap_scale = Some(1.6);
+        st.format_chars(0.."הדה".len(), |f| {
+            f.over.size = Some(40.0);
+            f.over.baseline_shift = Some(1.0);
+        });
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let before = all_lines(&plain);
+    let dc = lines[0].drop_cap.unwrap();
+    for (i, l) in lines.iter().take(4).enumerate() {
+        assert!((l.baseline - before[i].baseline).abs() < 0.01, "line {i}: {} vs {}", l.baseline, before[i].baseline);
+    }
+    let cap = lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((cap.sy * cap.face.upem - 16.0).abs() < 0.01);
+    let right = |l: &Line| l.glyphs.iter().filter(|g| g.visible && g.byte >= dc.end).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
+    assert!((300.0 - right(lines[1]) - dc.rect.width()).abs() < 0.01);
+    assert!((300.0 - right(lines[2])).abs() < 0.01);
+    eprintln!(
+        "baseline delta {}, line-2 indent {} pt, line-3 indent {} pt",
+        lines[0].baseline - before[0].baseline,
+        300.0 - right(lines[1]),
+        300.0 - right(lines[2])
+    );
+    d.story_mut(sid).unwrap().format_chars(0.."הדה".len(), |f| f.over.baseline_shift = Some(8.0));
+    let raised = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&raised)[0];
+    let db = designcraft_fonts::FontDb::global();
+    for g in line.glyphs.iter().filter(|g| g.byte < "הדה".len()) {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(line.drop_cap.unwrap().rect.y0 <= line.baseline + g.y + ink.y0 * g.sy + 0.01);
+    }
+    assert!((line.baseline - before[0].baseline).abs() < 0.01);
+}
+
+#[test]
+fn s2c_short_note_drop_cap_clears_the_next_note() {
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs::default());
+    let fmt = ParaFormat {
+        para: ParaAttrs { drop_cap_keep_size: Some(true), ..drop_cap(2, 1) },
+        chars: designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(12.0)), ..Default::default() },
+        ..Default::default()
+    };
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(5, "A short note.", fmt.clone());
+    std::sync::Arc::make_mut(&mut st.notes[0]).text.format_chars(0..1, |f| f.over.size = Some(30.0));
+    st.insert_note(15, "Another note.", ParaFormat { para: ParaAttrs::default(), ..fmt });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let notes = &cs.frames[0].notes;
+    assert_eq!(notes.len(), 2);
+    let first = all_lines(&notes[0].text)[0];
+    let next = all_lines(&notes[1].text)[0];
+    let cap_bottom = notes[0].origin.y + first.drop_cap.unwrap().rect.y1;
+    let next_top = notes[1].origin.y + next.baseline - next.ascent;
+    eprintln!("short-note cap bottom {cap_bottom}, next line top {next_top}");
+    assert!(cap_bottom <= next_top + 0.01, "drop cap overprints the following note");
+}
+
+#[test]
+fn hebrew_drop_cap_height_skips_leading_punctuation() {
+    const FAMILY: &str = "DC Test Hebrew Quoted Drop";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' ', '"'], 'z').unwrap());
+    let compose = |prefix: &str, chars| {
+        let text = format!("{prefix}{}", "הדה הדה הדה ".repeat(30));
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, chars) };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose("", 3);
+    let quoted = compose("\"", 4);
+    let plain_lines = all_lines(&plain);
+    let quoted_lines = all_lines(&quoted);
+    let first = plain_lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let after_quote = quoted_lines[0].glyphs.iter().find(|g| g.byte == 1).unwrap();
+    assert_eq!(after_quote.face.family, FAMILY);
+    assert!((first.sy - after_quote.sy).abs() < 1e-6);
+    assert!((first.y - after_quote.y).abs() < 0.01);
+}
+
+#[test]
+fn right_to_left_drop_cap_keeps_marks_on_their_letters() {
+    const FAMILY: &str = "DC Test Hebrew Drop Marks";
+    designcraft_fonts::FontDb::global().add_font(
+        designcraft_fonts::testing::font_with(
+            FAMILY,
+            &[
+                'ה', 'ע', 'מ', 'ו', 'ד', 'ר', 'א', 'ש', 'ן', 'ל', 'ס', 'פ', '\u{5B8}', '\u{5B7}', '\u{5BC}', '\u{5B4}', '\u{5C1}', '\u{5B9}',
+                '\u{5B6}', '\u{5B5}', ' ',
+            ],
+        )
+        .unwrap(),
+    );
+    let first_word = "הָעַמּוּד";
+    let text = "הָעַמּוּד הָרִאשׁוֹן שֶׁל הַסֵּפֶר ".repeat(20);
+    let compose = |cap| {
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..cap };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose(ParaAttrs::default());
+    let dropped = compose(drop_cap(2, 9));
+    let plain_lines = all_lines(&plain);
+    let lines = all_lines(&dropped);
+    assert!(plain_lines.len() > 2 && lines.len() > 2, "the paragraph wraps beside the drop cap");
+    let plain_glyphs = &plain_lines[0].glyphs;
+    let glyphs = &lines[0].glyphs;
+    let marks: Vec<_> = glyphs
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| {
+            g.byte < first_word.len() && (g.adv == 0.0 || first_word.get(g.byte..).is_some_and(|s| s.starts_with(['\u{5B8}', '\u{5B7}', '\u{5BC}'])))
+        })
+        .collect();
+    assert!(!marks.is_empty(), "the synthetic font must shape marks in their base clusters");
+    for (i, mark_dc) in marks {
+        let base_dc = glyphs.iter().find(|g| g.byte == mark_dc.byte && g.adv > 0.0).unwrap();
+        let cluster_index = glyphs[..i].iter().filter(|g| g.byte == mark_dc.byte).count();
+        let mark_plain = plain_glyphs.iter().filter(|g| g.byte == mark_dc.byte).nth(cluster_index).unwrap();
+        let base_plain = plain_glyphs.iter().find(|g| g.byte == mark_dc.byte && g.adv > 0.0).unwrap();
+        assert_eq!(mark_dc.face.family, FAMILY);
+        assert_ne!(mark_dc.gid, 0);
+        let k = base_dc.sx / base_plain.sx;
+        let rel = mark_plain.x - base_plain.x;
+        let rel_dc = mark_dc.x - base_dc.x;
+        assert!((rel_dc - rel * k).abs() < 0.01 * k, "byte {}: drop-cap mark offset {rel_dc}, expected {} (scale {k})", mark_dc.byte, rel * k);
+    }
+    let rect = lines[0].drop_cap.unwrap().rect;
+    for g in glyphs.iter().filter(|g| g.byte < first_word.len()) {
+        assert!(g.x >= rect.x0 - 0.01 && g.x <= rect.x1 + 0.01, "byte {}: x {} outside {rect:?}", g.byte, g.x);
+    }
 }
 
 #[test]
@@ -5166,6 +5811,20 @@ fn drop_cap_takes_its_character_style_and_nested_styles_count_it() {
     assert_eq!(fill(&cs, at(3)), "Initial Red", "the second nested style starts after the drop cap");
     let first_space = LOREM.find(' ').unwrap();
     assert_eq!(fill(&cs, at(first_space + 1)), "[Black]");
+}
+
+#[test]
+fn drop_word_hit_testing_reaches_both_edges() {
+    let (d, sid, _) = drop_doc("one body words", ParaAttrs { drop_cap_words: Some(1), ..drop_cap(3, 0) });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let cap = line.drop_cap.unwrap();
+    let first = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let end = "one".len();
+    let last = line.glyphs.iter().rfind(|g| g.len > 0 && g.byte < end).unwrap();
+    let y = (cap.rect.y0 + cap.rect.y1) / 2.0;
+    assert_eq!(hit(&cs, 0, Point::new((first.x + 0.01).max(cap.rect.x0), y)), Some(0));
+    assert_eq!(hit(&cs, 0, Point::new((last.x + last.adv - 0.01).min(cap.rect.x1 - 0.01), y)), Some(end));
 }
 
 #[test]

@@ -46,6 +46,7 @@ use designcraft_doc::{
 };
 use designcraft_fonts::{FontDb, ScopedFonts};
 use designcraft_geom::{Affine, Point, Rect};
+use unicode_script::UnicodeScript;
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
@@ -167,6 +168,10 @@ pub struct PlacedGlyph {
     /// How far after its pen position the glyph is drawn (CJK aki, ruby parent spacing): its
     /// advance starts at `x - dx`.
     pub dx: f64,
+    /// Part of the bullet or number the paragraph's list adds (see [`shape::Glyph::list_label`]).
+    /// It carries the first character's offset and no length, so anything selecting glyphs by
+    /// byte range has to leave it out or it reaches text outside the range.
+    pub list_label: bool,
 }
 
 impl PlacedGlyph {
@@ -1756,7 +1761,23 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
             let mut gl = sp.glyphs.clone();
-            let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
+            // Classified before the drop cap is split off: `split_drop_cap` takes those glyphs out
+            // of the vector, and the drop cap's character still votes (#1688).
+            let korean = hyphen::korean_paragraph(gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
+            let dc = split_drop_cap(
+                db,
+                &mut gl,
+                drop_end,
+                pp.drop_cap_lines,
+                base_leading,
+                base_cap,
+                drop_grid,
+                drop_align,
+                pp.drop_cap_keep_size,
+                (pp.drop_cap_scale, base_chars.size),
+                pp.word_space_desired,
+                drop_tabs,
+            );
             let width = |j: usize| {
                 let ind = match &dc {
                     Some(dc) if j < dc.lines => dc.indent(),
@@ -1767,7 +1788,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2354,7 +2375,8 @@ fn placement_overflow(input: PlacementOverflow<'_>) -> LinePlacement {
     if range.is_empty() && range.start >= story.text.len() {
         return LinePlacement::StoryComplete;
     }
-    out.overset_at = Some(glyphs.get(glyph_index).map(|g| g.byte).unwrap_or(range.start));
+    // Nothing of the paragraph placed: its drop cap, already split from `glyphs`, is overset too.
+    out.overset_at = Some(if glyph_index == 0 { range.start } else { glyphs.get(glyph_index).map_or(range.start, |g| g.byte) });
     LinePlacement::Overset
 }
 
@@ -2611,6 +2633,12 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 last_line_mark,
             });
             let LinePosition { x0, x1, baseline, grid_end, continues } = position;
+            // An oversized cap cannot start here; try the next column before placing any text.
+            if drop_cap.filter(|_| line_no == 0).is_some_and(|dc| dc.indent() > x1 - x0 - pp.left_indent - pp.right_indent) {
+                advance_placement_column(cur, spanning, cols);
+                moved = true;
+                break;
+            }
             // The breaker set this line for another segment width: re-break the rest of the
             // paragraph from here, starting with this line's segments as they are. A pass
             // re-breaks at its first line only for a new line, whose segments it carries, so
@@ -2730,7 +2758,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                     end: dc.end,
                     baseline: baseline + dc.drop,
                     // From its line's top, or its own top when it rises above that line.
-                    rect: Rect::new(at, (baseline - asc).min(baseline + dc.drop - dc.cap), at + dc.width, baseline + dc.drop + desc),
+                    rect: dc.bounds(at, baseline, asc, desc),
                 });
             }
             ruby::annotate(db, styles_tab, &story.text, &mut placed, doc.settings.glyph_fallback, f.vertical);
@@ -2742,9 +2770,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(range_end).min(range_end);
             let range_start = if line_no == 0 { prange.start } else { range_start };
             let ft = &mut out.frames[cur.fi];
-            if line_no == 0 {
-                first_line_rect = Some((cur.fi, baseline, asc, x0));
-            }
+            first_line_rect.get_or_insert((cur.fi, baseline, asc, x0));
             if let Some(sb) = cur.split.as_mut() {
                 sb.line0.get_or_insert(ft.lines.len());
                 sb.sub_lines += 1;
@@ -2966,6 +2992,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         g.and_then(|g| table.styles.get(g.style as usize)).map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+    // Classified before the drop cap is split off (see the same call in the measuring loop above).
+    let korean = hyphen::korean_paragraph(sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
@@ -2975,6 +3003,9 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         base_cap,
         drop_grid,
         drop_align,
+        pp.drop_cap_keep_size,
+        (pp.drop_cap_scale, base_chars.size),
+        pp.word_space_desired,
         (&pp.tabs[..], drop_tab_indent),
     );
     // List labels take the default super/subscript settings.
@@ -3055,7 +3086,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+    let mut hyph_after =
+        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story, cjk);
@@ -5623,6 +5655,12 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                // The leader fills a tab, so it belongs to whatever that tab belongs to. Saying
+                // `false` for the tab of a list label made the leader claim to be the
+                // paragraph's own text while carrying the paragraph-start byte, so a PDF link
+                // starting at the first text character swept the leader positions into its
+                // rectangle (noted in review).
+                list_label: tab.list_label,
                 rendered_char: '\t',
                 face: tab.face,
                 gid,
@@ -5789,6 +5827,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         len: g.len,
         generated_text: g.generated_text.clone(),
         visible,
+        list_label: g.list_label,
         upright: g.upright,
         tcy: g.tcy,
         rtl: false,
@@ -5796,24 +5835,53 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
     }
 }
 
-/// Drop caps are at most this many lines and characters (larger values are capped).
+/// Drop caps are at most this many lines, characters or words (larger values are capped).
 pub const MAX_DROP_CAP_LINES: u32 = 25;
 pub const MAX_DROP_CAP_CHARS: u32 = 150;
+pub const MAX_DROP_CAP_WORDS: u32 = 25;
 
-/// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_chars` characters
-/// (code points, as InDesign counts them, spaces included), extended to the end of the grapheme
-/// cluster they end in so a letter keeps its combining marks; all of them in a shorter paragraph.
-/// `prange.start` when it has none: no lines or characters, or vertical text (which sets no drop
-/// caps).
+/// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_words` runs of
+/// non-whitespace when above zero (ending at the last word before a forced line, column, frame or
+/// page break, so the break stays in the text), otherwise its first `drop_cap_chars` code points
+/// (spaces included). Extend to the end of the grapheme cluster so a letter keeps its combining
+/// marks; take the whole paragraph when shorter. Counts are capped at their respective maxima.
+/// Return `prange.start` with no lines, neither words nor characters, or vertical text.
 fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool) -> usize {
     use unicode_segmentation::UnicodeSegmentation as _;
-    if vertical || pp.drop_cap_lines == 0 || pp.drop_cap_chars == 0 {
+    if vertical || pp.drop_cap_lines == 0 || (pp.drop_cap_chars == 0 && pp.drop_cap_words == 0) {
         return prange.start;
     }
     let Some(para) = text.get(prange.clone()) else { return prange.start };
     let para = para.trim_end_matches('\n');
-    let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
-    let end = para.char_indices().nth(n).map_or(para.len(), |(i, _)| i);
+    let end = if pp.drop_cap_words > 0 {
+        let mut remaining = pp.drop_cap_words.min(MAX_DROP_CAP_WORDS);
+        let mut in_word = false;
+        let mut word_end = 0;
+        para.char_indices()
+            .find_map(|(i, ch)| {
+                if breaker::is_forced(ch) {
+                    return Some(word_end);
+                }
+                if ch.is_whitespace() {
+                    if in_word {
+                        remaining -= 1;
+                        if remaining == 0 {
+                            return Some(i);
+                        }
+                    }
+                    in_word = false;
+                } else {
+                    in_word = true;
+                    word_end = i + ch.len_utf8();
+                }
+                None
+            })
+            // Out of text: end after the last word, so trailing spaces or a tab stay out.
+            .unwrap_or(word_end)
+    } else {
+        let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
+        para.char_indices().nth(n).map_or(para.len(), |(i, _)| i)
+    };
     prange.start + para.grapheme_indices(true).map(|(i, _)| i).find(|i| *i >= end).unwrap_or(para.len())
 }
 
@@ -5833,6 +5901,22 @@ struct DropCap {
     drop: f64,
     /// Its cap height as set (how far its top sits above its baseline).
     cap: f64,
+    descent: f64,
+    kept: bool,
+}
+
+/// Measure the top of the horizontal stroke at the glyph's centre so that serifs don't count.
+fn drop_cap_stroke_top(outline: &designcraft_geom::kurbo::BezPath) -> Option<f64> {
+    use designcraft_geom::kurbo::{Line, ParamCurve as _};
+
+    let ink = designcraft_geom::Shape::bounding_box(outline);
+    let x = (ink.x0 + ink.x1) / 2.0;
+    let column = Line::new((x, ink.y0 - 1.0), (x, ink.y1 + 1.0));
+    outline
+        .segments()
+        .flat_map(|seg| seg.intersect_line(column).into_iter().map(move |hit| seg.eval(hit.segment_t).y))
+        .filter(|y| y.is_finite())
+        .min_by(f64::total_cmp)
 }
 
 /// Take the drop cap (the glyphs before byte `end`) off the front of a paragraph's glyphs and scale
@@ -5844,7 +5928,9 @@ struct DropCap {
 /// steps apart. With `align_left` its ink starts at the indent (see [`DropCap::lsb`]). Tabs inside
 /// it advance to the stops of `tabs` (stops and the start-side indent; in right-to-left paragraphs
 /// both measured from the column's right edge). Spaces right after it join it at its size without
-/// widening it.
+/// widening it. With `keep_size`, it keeps its own size and those spaces count in its width.
+/// A kept drop cap taller than the body hangs from the first line's tops; one no taller sits on
+/// the first baseline like any word.
 #[allow(clippy::too_many_arguments)]
 fn split_drop_cap(
     db: &ScopedFonts<'_>,
@@ -5855,6 +5941,9 @@ fn split_drop_cap(
     base_cap: f64,
     grid: Option<f64>,
     align_left: bool,
+    keep_size: bool,
+    scale: (f64, f64),
+    word_space: f64,
     tabs: (&[designcraft_doc::TabStop], f64),
 ) -> Option<DropCap> {
     let n = glyphs.iter().take_while(|g| g.byte < end).count();
@@ -5863,26 +5952,93 @@ fn split_drop_cap(
     }
     let lines = lines.clamp(1, MAX_DROP_CAP_LINES) as usize;
     let mut dc: Vec<Glyph> = glyphs.drain(..n).collect();
+    let (scale, base_size) = scale;
+    let scale = if scale.is_finite() && (0.0..=20.0).contains(&scale) { scale } else { 0.0 };
+    let keep_size = keep_size || scale > 0.0;
+    let body_size = glyphs.iter().find(|g| !g.is_space() && g.size > 0.0).map_or(base_size, |g| g.size);
+    if scale > 0.0 {
+        for g in &mut dc {
+            let k = body_size * scale / g.size;
+            if k.is_finite() && k > 0.0 {
+                g.adv *= k;
+                g.dx *= k;
+                g.dy *= k;
+                g.sx *= k;
+                g.sy *= k;
+                g.ascent *= k;
+                g.typo_ascent *= k;
+                g.descent *= k;
+                g.cap *= k;
+                g.xh *= k;
+                g.size *= k;
+                g.space *= k;
+            }
+        }
+    }
     let spaces = glyphs.iter().take_while(|g| g.is_space()).count();
     let mut after: Vec<Glyph> = glyphs.drain(..spaces).collect();
     let end = after.last().map_or(end, |g| g.byte.saturating_add(g.len).max(end));
+    let is_hebrew = |glyphs: &[Glyph]| glyphs.iter().find(|g| g.ch.is_alphabetic()).is_some_and(|g| g.ch.script() == unicode_script::Script::Hebrew);
+    let hebrew = is_hebrew(&dc);
+    let body_hebrew = is_hebrew(glyphs);
+    let height = |g: &Glyph, hebrew: bool| {
+        if hebrew {
+            let gid = g.face.glyph_for('ה');
+            if gid != 0 {
+                // Outlines are y-down in font units; cap heights are positive points.
+                let outline = db.outline(g.face.get(), gid);
+                if let Some(measured) = drop_cap_stroke_top(&outline).map(|y| -y * g.sy).filter(|h| h.is_finite() && *h > 0.0) {
+                    return measured;
+                }
+                let ink = designcraft_geom::Shape::bounding_box(&*outline);
+                let measured = -ink.y0 * g.sy;
+                if measured.is_finite() && measured > 0.0 {
+                    return measured;
+                }
+            }
+        }
+        g.cap
+    };
     let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0);
-    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, g.cap, Some(g.size)));
+    let reference = if body_hebrew { glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0 && g.ch.is_alphabetic()).or(body) } else { body };
+    let (lead, body_size) = body.map_or((base_leading, None), |g| (g.leading, Some(g.size)));
+    let cap = reference.map_or(base_cap, |g| height(g, body_hebrew));
     let lead = match grid.map(|inc| (lead / inc - 1e-6).ceil().max(1.0) * inc) {
         Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
         _ => lead,
     };
     let drop = (lines - 1) as f64 * lead;
     // The cap's tallest glyph sets its height; its point size over the body's scales the fit.
-    let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| if g.cap > c { (g.cap, g.size) } else { (c, s) });
+    let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| {
+        let h = height(g, hebrew);
+        if h > c { (h, g.size) } else { (c, s) }
+    });
     let ratio = match body_size {
         Some(b) if b > 0.0 && own_size > 0.0 && (own_size / b).is_finite() => own_size / b,
         _ => 1.0,
     };
-    let k = if own > 0.0 { (drop + cap) / own * ratio } else { 1.0 };
+    // Kept at its size, it hangs from the first line's tops: as much lower as it is taller.
+    let drop = match keep_size {
+        true if (own - cap).is_finite() => (own - cap).max(0.0),
+        true => 0.0,
+        false => drop,
+    };
+    let k = if keep_size {
+        1.0
+    } else if own > 0.0 {
+        (drop + cap) / own * ratio
+    } else {
+        1.0
+    };
     let k = if lines == 1 { k.min(1.0) } else { k };
     let k = if k.is_finite() && k > 0.0 { k.min(1000.0) } else { 1.0 };
     for g in dc.iter_mut().chain(after.iter_mut()) {
+        if !g.locked_advance && g.is_word_space() {
+            let advance = g.adv + g.space * (word_space - 1.0);
+            if advance.is_finite() {
+                g.adv = advance;
+            }
+        }
         g.adv *= k;
         g.dx *= k;
         g.dy *= k;
@@ -5918,30 +6074,59 @@ fn split_drop_cap(
         }
         x += dc.get(i).map_or(0.0, |g| g.adv);
     }
-    let width = dc.iter().map(|g| g.adv).sum();
+    // Kept at its size, the word sits in the line, so the space after it separates it from the next word.
+    let width = dc.iter().chain(after.iter().filter(|_| keep_size)).map(|g| g.adv).sum();
     dc.append(&mut after);
-    let cap = dc.iter().map(|g| g.cap).fold(0.0, f64::max);
-    Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
+    let (ink_top, ink_bottom) = dc
+        .iter()
+        .filter(|g| !g.is_space())
+        .map(|g| {
+            let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), g.gid));
+            (-g.shift + g.dy + ink.y0 * g.sy, -g.shift + g.dy + ink.y1 * g.sy)
+        })
+        .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+        .unwrap_or((0.0, 0.0));
+    let lines = if keep_size && lead.is_finite() && lead > 0.0 {
+        // Only bands meeting the ink need its indent; Lines remains a hard upper bound.
+        // Like wrap_slot, a line band starts one leading above its baseline.
+        (((drop + ink_bottom + lead) / lead).ceil().max(1.0) as usize).min(lines)
+    } else {
+        lines
+    };
+    let cap = if keep_size { -ink_top } else { dc.iter().map(|g| height(g, hebrew)).fold(0.0, f64::max) };
+    Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap, descent: ink_bottom, kept: keep_size })
 }
 
 impl DropCap {
+    fn bounds(&self, at: f64, baseline: f64, ascent: f64, descent: f64) -> Rect {
+        if self.kept {
+            Rect::new(at, baseline + self.drop - self.cap, at + self.width, baseline + self.drop + self.descent)
+        } else {
+            Rect::new(at, (baseline - ascent).min(baseline + self.drop - self.cap), at + self.width, baseline + self.drop + descent)
+        }
+    }
+
     /// How far the lines beside it are indented: to the end of its advance.
     fn indent(&self) -> f64 {
         self.width - self.lsb
     }
 }
 
-/// The drop cap's glyphs set from `at` (right to left: mirrored, its first character on the right).
+/// The drop cap's glyphs set from `at`; right to left mirrors whole clusters so marks keep their offsets.
 fn place_drop_cap(dc: &DropCap, at: f64, rtl: bool) -> Vec<PlacedGlyph> {
     let mut x = at;
     let mut out = Vec::with_capacity(dc.glyphs.len());
-    for g in &dc.glyphs {
-        let pen = if rtl { at + at + dc.width - x - g.adv } else { x };
-        let mut p = place(g, pen);
-        p.y += dc.drop;
-        p.rtl = rtl;
-        out.push(p);
-        x += g.adv;
+    for cluster in dc.glyphs.chunk_by(|a, b| a.byte == b.byte && a.bidi_offset == b.bidi_offset) {
+        let w: f64 = cluster.iter().map(|g| g.adv).sum();
+        let mut pen = if rtl { at + at + dc.width - x - w } else { x };
+        for g in cluster {
+            let mut p = place(g, pen);
+            p.y += dc.drop;
+            p.rtl = rtl;
+            out.push(p);
+            pen += g.adv;
+        }
+        x += w;
     }
     out
 }
@@ -6116,9 +6301,21 @@ fn hyphenation_points(
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+    korean: bool,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
+        return out;
+    }
+    // Korean is set word by word and is not hyphenated (KLREQ). An ordinary Korean document
+    // leaves the paragraph language at the default English, so the paragraph's own text decides
+    // rather than its language setting (#1688).
+    //
+    // Decided by the caller, from the paragraph's glyphs *before* its drop cap is split off:
+    // `split_drop_cap` takes those glyphs out of the vector, so classifying here lost the drop
+    // cap's character -- 15 Hangul against 15 Latin became 14 against 15, and the paragraph
+    // hyphenated its English. See `hyphen::korean_paragraph`.
+    if korean {
         return out;
     }
     let lim = hyphen::Limits {
@@ -6127,6 +6324,8 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
+    // The token the last word run sat in, and whether it is kept whole (see below).
+    let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -6147,6 +6346,24 @@ fn hyphenation_points(
         let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
+            // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
+            // on it ("News와") or inside an address is not a word to hyphenate (#1688). Found once
+            // per token and reused for the word runs inside it: unspaced CJK text is one token
+            // however many Latin words it holds, and scanning it again for each was quadratic.
+            let keep = match token {
+                Some((start, end, keep)) if start <= a && b <= end => keep,
+                _ => {
+                    let start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+                    let end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
+                    let keep = hyphen::keep_whole(&text[start..end]);
+                    token = Some((start, end, keep));
+                    keep
+                }
+            };
+            if keep {
+                i = j.max(i + 1);
+                continue;
+            }
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
@@ -6947,8 +7164,12 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
             .glyphs
             .iter()
             .filter(|g| g.len > 0 && g.byte < dc.end)
-            .flat_map(|g| [g.byte, g.byte + g.len])
-            .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
+            .flat_map(|g| {
+                let (start, end) = if g.rtl { (g.x + g.adv, g.x) } else { (g.x, g.x + g.adv) };
+                [(g.byte, start), (g.byte.saturating_add(g.len), end)]
+            })
+            .min_by(|a, b| (a.1 - p.x).abs().total_cmp(&(b.1 - p.x).abs()))
+            .map(|(byte, _)| byte);
     }
     let l = hit_line(ft, p)?;
     if l.glyphs.iter().any(|g| g.rtl) {
