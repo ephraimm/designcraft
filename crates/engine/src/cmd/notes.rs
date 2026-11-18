@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), bodyHidden?: bool (no number or separator before the note text), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Note Series",
             [],
             None,
-            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, …options} → {id}",
+            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, bodyHidden?: bool, …options} → {id}",
             has_doc,
             series_create
         ),
@@ -470,6 +470,35 @@ mod tests {
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": "Body text with a note here."})).unwrap();
         let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
         (s, sid)
+    }
+
+    #[test]
+    fn body_hidden_series_omits_label_and_separator_and_preserves_reference() {
+        let (mut s, sid) = session_with_text();
+        let series = s.execute("footnote.series.create", &json!({"name": "Sources", "separator": "XYZ"})).unwrap()["id"].clone();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("footnote.insert", &json!({"series": series, "text": "A source."})).unwrap();
+        let composed = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            let cs = s.cache.get(d, sid, None);
+            let body: String =
+                cs.frames[0].notes[0].text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).map(|g| g.rendered_char).collect();
+            let main: Vec<_> = cs.frames[0].lines.iter().flat_map(|l| &l.glyphs).map(|g| (g.rendered_char, g.x, g.adv)).collect();
+            (body, main)
+        };
+        let (numbered, reference) = composed(&s);
+        assert!(numbered.contains("1XYZ"), "{numbered}");
+        s.execute("footnote.series.options", &json!({"series": series, "bodyHidden": true})).unwrap();
+        let (hidden, after) = composed(&s);
+        assert_eq!(hidden, "A source.");
+        assert_eq!(reference, after);
+        let bytes = designcraft_format::save(&s.doc().unwrap().doc).unwrap();
+        let back = designcraft_format::load(&bytes).unwrap();
+        assert_eq!(serde_json::to_value(back.note_options(series.as_u64().unwrap())).unwrap()["bodyHidden"], true);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(composed(&s).0, numbered);
+        s.execute("footnote.options", &json!({"bodyHidden": true})).unwrap();
+        assert_eq!(s.execute("footnote.options", &json!({})).unwrap()["bodyHidden"], true);
     }
 
     #[test]

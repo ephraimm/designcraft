@@ -5602,6 +5602,7 @@ fn idml_warns_before_flattening_streams_and_hidden_references_even_in_series_zer
 }
 
 #[test]
+<<<<<<< HEAD
 fn idml_warns_before_dropping_inset_geometry() {
     use designcraft_doc::{Document, InsetColumns, InsetStream, SpreadRef, build::NewDocument, geom::Rect};
     let mut doc = Document::new(&NewDocument::default());
@@ -5618,6 +5619,18 @@ fn idml_warns_before_dropping_inset_geometry() {
     });
     let (_, warnings) = crate::export_idml_report(&doc, &Default::default());
     assert!(warnings.iter().any(|w| w.contains("inset-column geometry")));
+=======
+fn idml_warns_before_restoring_hidden_body_labels() {
+    let mut doc = Document::new(&NewDocument::default());
+    let (_, host) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 400.0), doc.default_layer(), "Body", Default::default()).unwrap();
+    doc.story_mut(host).unwrap().insert_note(4, "Source", Default::default()).unwrap();
+    doc.footnote_options.body_hidden = true;
+    let (bytes, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("hidden note body labels")), "{warnings:?}");
+    let back = import_idml(&bytes).unwrap();
+    assert!(back.stories.values().flat_map(|s| &s.notes).any(|n| n.text.text == "Source"));
+>>>>>>> 35800079
 }
 
 #[test]
