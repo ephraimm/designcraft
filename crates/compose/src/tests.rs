@@ -2407,6 +2407,88 @@ fn table_rows_break_across_frames_with_header_repeat() {
     assert!(cs.is_overset());
 }
 
+/// Body rows of a two-frame table, per frame (a 9-row body under one header row; the second
+/// frame holds all of them).
+fn rows_per_frame(edit: impl Fn(&mut designcraft_doc::Table)) -> (Vec<usize>, Vec<usize>) {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 150.0), lid, "", ParaFormat::default()).unwrap();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 600.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(f1, f2).unwrap();
+    let mut t = filled(9, 2, 1, 300.0);
+    edit(&mut t);
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "overset at {:?}", cs.overset_at);
+    let body = |fi: usize| -> Vec<usize> {
+        cs.frames[fi].tables.iter().flat_map(|t| t.cells.iter()).filter(|c| c.row > 0 && c.col == 0 && !c.repeated).map(|c| c.row).collect()
+    };
+    (body(0), body(1))
+}
+
+#[test]
+fn table_rows_keep_with_next_row_and_start_in_the_next_frame() {
+    let (a, b) = rows_per_frame(|_| {});
+    let split = *b.first().unwrap();
+    assert!(split > 3, "the first frame holds more than three body rows: {a:?} {b:?}");
+    // Keep with Next Row on rows 2 and 3: rows 2–4 move on together.
+    let (a2, b2) = rows_per_frame(|t| {
+        for r in 2..=split - 1 {
+            t.rows[r].keep_with_next = true;
+        }
+    });
+    assert_eq!(a2, (1..2).collect::<Vec<_>>(), "{b2:?}");
+    assert_eq!(b2.first(), Some(&2));
+    // Start Row in Next Frame on row 2, though it fits.
+    let (a3, b3) = rows_per_frame(|t| t.rows[2].start = designcraft_doc::StartParagraph::NextFrame);
+    assert_eq!(a3, vec![1]);
+    assert_eq!(b3.first(), Some(&2));
+    // A kept run taller than an empty frame breaks as if not kept, all of it (as InDesign does): it
+    // fills the first frame rather than moving its later rows on.
+    let (a4, b4) = rows_per_frame(|t| t.rows.iter_mut().for_each(|r| r.keep_with_next = true));
+    assert_eq!((a4, b4), (a, b));
+    // A row that starts in the next frame ends the kept run before it.
+    let (a5, b5) = rows_per_frame(|t| {
+        (1..3).for_each(|r| t.rows[r].keep_with_next = true);
+        t.rows[2].start = designcraft_doc::StartParagraph::NextFrame;
+    });
+    assert_eq!((a5, b5.first()), (vec![1], Some(&2)));
+}
+
+#[test]
+fn a_row_starting_in_the_next_frame_leaves_a_later_column() {
+    // A table at the top of the second column of a frame (after a column break): a first row
+    // that asks for the next frame still moves on to the second frame (the top of a column isn't
+    // the next frame), and one that asks for the next column stays.
+    let compose = |start: designcraft_doc::StartParagraph| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let text = format!("Intro{}", designcraft_doc::story::COLUMN_BREAK);
+        let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 200.0), lid, &text, ParaFormat::default()).unwrap();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 300.0, 300.0, 500.0), lid, "", ParaFormat::default()).unwrap();
+        d.item_mut(f1).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        d.thread(f1, f2).unwrap();
+        let mut t = filled(2, 1, 0, 100.0);
+        t.rows[0].start = start;
+        let st = d.story_mut(sid).unwrap();
+        let end = st.len();
+        st.insert(
+            end, "
+",
+        );
+        let end = st.len();
+        st.insert_table(end, t);
+        d.check().unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        cs.frames.iter().map(|f| f.tables.iter().map(|t| t.column).collect::<Vec<_>>()).collect::<Vec<_>>()
+    };
+    assert_eq!(compose(designcraft_doc::StartParagraph::Anywhere), vec![vec![1], vec![]]);
+    assert_eq!(compose(designcraft_doc::StartParagraph::NextColumn), vec![vec![1], vec![]]);
+    assert_eq!(compose(designcraft_doc::StartParagraph::NextFrame), vec![vec![], vec![0]]);
+}
+
 #[test]
 fn table_cells_hit_test_and_place_carets() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), filled(2, 3, 0, 300.0));
@@ -11624,4 +11706,43 @@ fn margin_footnote_columns_are_ignored() {
     assert_eq!(a.frames[0].notes.len(), b.frames[0].notes.len());
     assert_eq!(a.frames[0].notes[0].rect, b.frames[0].notes[0].rect);
     assert_eq!(a.frames[0].notes[0].text.frames[0].lines.len(), b.frames[0].notes[0].text.frames[0].lines.len());
+}
+
+#[test]
+fn footnote_columns_large_leading_and_small_first_baseline() {
+    let (mut d, sid, fid) = doc_with("Body references here.", Rect::new(0.0, 0.0, 400.0, 500.0), ParaAttrs::default());
+    d.footnote_options.columns = 2;
+    d.footnote_options.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+    d.footnote_options.first_baseline_min = 8.0;
+    for pos in [8, 6, 4, 2] {
+        let st = d.story_mut(sid).unwrap();
+        let id = st.insert_note(pos, "Source", ParaFormat::default()).unwrap();
+        let n = st.note_mut(id).unwrap();
+        n.text.format_chars(0..n.text.len(), |f| {
+            f.over.size = Some(8.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(60.0));
+        });
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ns = &cs.frame(fid).unwrap().notes;
+    assert_eq!(ns.len(), 4);
+    assert!(ns[2].rect.x0 > ns[1].rect.x0);
+    assert!(ns[0].rect.y0 < ns[1].rect.y0);
+    assert!((ns[1].rect.y1 - ns[3].rect.y1).abs() < 0.01);
+}
+
+#[test]
+fn footnote_columns_end_caret_and_imported_gutter() {
+    let (mut d, sid, fid) = doc_with("Body reference.", Rect::new(0.0, 0.0, 400.0, 500.0), ParaAttrs::default());
+    d.footnote_options.columns = 2;
+    d.footnote_options.column_gutter = 200.0;
+    let text = "A synthetic source line.\n".repeat(12);
+    let id = d.story_mut(sid).unwrap().insert_note(4, &text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ns = &cs.frame(fid).unwrap().notes;
+    assert_eq!(ns.len(), 2);
+    assert!(ns.iter().all(|n| n.rect.x1 <= 400.0));
+    let (_, x, bl, _, _) = note_caret(&cs, id, text.len()).unwrap();
+    assert!(x >= ns[1].origin.x);
+    assert!(bl >= ns[1].rect.y0 && bl <= ns[1].rect.y1 + 0.01);
 }

@@ -366,3 +366,29 @@ mod insert_size_tests {
         assert_eq!(t["cells"].as_array().unwrap().len(), 4, "one body row and one header row, two columns");
     }
 }
+
+/// Keep options share the table target and undo boundary with row sizing.
+pub(super) fn row_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.rowOptions";
+    let g = target(s, p, ID)?;
+    let keep = p.get("keepWithNext").map(|v| v.as_bool().ok_or_else(|| bad(ID, "keepWithNext must be a boolean"))).transpose()?;
+    let start = p
+        .get("start")
+        .map(|v| serde_json::from_value::<designcraft_doc::StartParagraph>(v.clone()).map_err(|e| bad(ID, e.to_string())))
+        .transpose()?;
+    if keep.is_none() && start.is_none() {
+        return Err(bad(ID, "provide keepWithNext or start"));
+    }
+    edit_table(s, &g, ID, |t| {
+        let rows = t.rows.get_mut(g.range.r0..=g.range.r1).ok_or_else(|| bad(ID, "row range out of bounds"))?;
+        for row in rows {
+            if let Some(value) = keep {
+                row.keep_with_next = value;
+            }
+            if let Some(value) = start {
+                row.start = value;
+            }
+        }
+        ok()
+    })
+}

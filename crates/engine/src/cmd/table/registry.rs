@@ -2,7 +2,7 @@ use super::cell::{get_cell_diagonal, get_cell_stroke, set_cell};
 use super::content::{drop_cells, place_graphic, sort_rows};
 use super::options::{get, options};
 use super::selection::{go_to_row, move_rc, select, step_cell, toggle_selection};
-use super::sizing::{distribute_cols, distribute_rows, resize_border, set_col_width, set_row_height};
+use super::sizing::{distribute_cols, distribute_rows, resize_border, row_options, set_col_width, set_row_height};
 use super::structure::{
     can_convert_rows, convert_from_text, convert_rows, convert_to_text, delete_cols, delete_rows, delete_table, insert, insert_col, insert_row,
     merge, split, unmerge,
@@ -313,6 +313,15 @@ fn table_specs() -> Vec<CommandSpec> {
             "{story?, table?, rows?, cols?} → {lines, weight, color, tint, type, gapColor, gapTint, inFront} of the target cells' diagonal lines (a value that differs between them is null), with story, table, rows: [a, b] and cols: [a, b] naming the target cells",
             in_table_or_ids,
             get_cell_diagonal
+        ),
+        cmd!(
+            "table.rowOptions",
+            "Keep with Next Row / Start Row",
+            ["Table", "Cell Options"],
+            None,
+            "{keepWithNext?: bool (Keep with Next Row), start?: anywhere|nextColumn|nextFrame|nextPage|nextOddPage|nextEvenPage (Start Row), story?, table?, rows?: [a,b] | row?} — sets the selected rows' keep options; inspect with table.get",
+            in_table_or_ids,
+            row_options
         ),
         cmd!(
             "table.setRowHeight",

@@ -601,7 +601,7 @@ impl SeriesNotes {
                 for fragment in fragments {
                     let Some(p) = here.get(fragment.note) else { continue };
                     let note = &p.note;
-                    let x = col.x0 + fragment.column as f64 * (width + o.column_gutter);
+                    let x = col.x0 + fragment.column as f64 * (width + o.clamped_column_gutter());
                     ft.notes.push(PlacedNote {
                         id: note.id,
                         index: match p.source {

@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-18: table rows support Keep with Next Row and Start Row through `table.rowOptions`; kept groups reserve their cell footnotes before fitting (#2353 integration).
+
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)

@@ -153,6 +153,7 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Estimate:** 10–20 h. **Doc:** [ui-parity.md](ui-parity.md)
 
 ### 12. Tables in depth (F)
+- **Have:** Keep with Next Row and Start Row, including IDML round trips; `table.rowOptions {keepWithNext?, start?, story?, table?, row? | rows?}` edits row keep options. Kept groups reserve cell notes before fitting. Oversized kept runs relax their keeps as a group (#2353 integration).
 - **Have:** cell footnotes share the column-foot area with body notes; row groups reserve their
   notes before fitting, and repeated headers/footers do not duplicate notes (#2611). Cell notes
   are numbered in the story's sequence (#2612).

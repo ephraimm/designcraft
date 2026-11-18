@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
+use designcraft_doc::{
+    Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, StartParagraph, Table, TextFrameOptions, VerticalJustification,
+};
 use designcraft_geom::{Point, Rect};
 
 use crate::notes::NoteNumber;
@@ -339,6 +341,7 @@ pub(crate) fn place_table(
     let header = table.header_rows();
     let footer = table.footer_rows();
     let body_end = nr - footer;
+    let keep_end = keep_groups(table, &group_end, body_end);
     let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
     let footer_h = sum(body_end, nr);
     let o = &table.options;
@@ -399,25 +402,38 @@ pub(crate) fn place_table(
         }
     };
     let mut r = header;
+    let mut forced: Option<StartParagraph> = None;
+    let mut loose = 0;
+    let mut started = None;
     loop {
         if r >= body_end {
             break;
         }
-        let ge = group_end[r].min(body_end).max(r + 1);
-        let gh = sum(r, ge);
-        let group = cell_notes(r..ge);
-        // Headers commit with the first fitting body group, in the column taking the fragment.
-        let pending_header = body_placed == 0 && (first_frag || o.repeat_header);
-        let mut extra = if pending_header { cell_notes(0..header) } else { Vec::new() };
-        extra.extend(group.iter().cloned());
-        if o.repeat_footer || ge == body_end {
-            extra.extend(cell_notes(body_end..nr));
-        }
-        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], col);
-        let reserve = notes.reserve_cells(doc, column, &extra, opts);
-        let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
+        forced = forced.or(row_start(table.rows[r].start, body_placed == 0 && at_col_top, cur, frames, doc).filter(|_| started != Some(r)));
+        let pending_header = body_placed == 0 && (first_frag || o.repeat_header);
+        let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], col);
+        let extra_for = |end| {
+            let mut extra = if pending_header { cell_notes(0..header) } else { Vec::new() };
+            extra.extend(cell_notes(r..end));
+            if o.repeat_footer || end == body_end {
+                extra.extend(cell_notes(body_end..nr));
+            }
+            extra
+        };
+        let kept = keep_end[r].min(body_end).max(r + 1);
+        let held = group_end[r].min(body_end).max(r + 1);
+        let mut reserve = notes.reserve_cells(doc, column, &extra_for(kept), opts);
+        let room = col.height() - if first_frag || o.repeat_header { sum(0, header) } else { 0.0 } - reserve - footer_h;
+        // Test the whole kept group's notes before deciding whether it fits an empty column.
+        let ge = next_group(&heights, r, (kept, held), room, &mut loose);
+        if ge != kept {
+            reserve = notes.reserve_cells(doc, column, &extra_for(ge), opts);
+        }
+        let group = cell_notes(r..ge);
+        let gh = sum(r, ge);
+        let bottom = col.y1 - reserve;
+        if forced.is_none() && (y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0)) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
                 // A row group taller than an empty column can never fit.
                 return false;
@@ -441,7 +457,13 @@ pub(crate) fn place_table(
             first_frag = false;
         }
         let was_first = first_frag;
-        cur.next_column(cols);
+        match forced.take() {
+            Some(start) => {
+                cur.start(start, cols, frames, doc);
+                started = Some(r);
+            }
+            None => cur.next_column(cols),
+        }
         if cur.fi >= frames.len() {
             return false;
         }
@@ -469,6 +491,53 @@ pub(crate) fn place_table(
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
     true
+}
+
+/// Start Row: where a row must begin, unless it already begins there: at the top of a column
+/// (`at_top`) for Next Column, and of the frame, the page, or a page of that parity for the others.
+fn row_start(start: StartParagraph, at_top: bool, cur: &Cursor, frames: &[FrameSpec], doc: &Document) -> Option<StartParagraph> {
+    let page = |fi: usize| frames.get(fi).and_then(|f| f.page);
+    let frame_top = at_top && cur.col == 0;
+    let page_top = frame_top && (cur.fi == 0 || page(cur.fi).is_none() || page(cur.fi - 1) != page(cur.fi));
+    let odd = page(cur.fi).map(|p| doc.page_number(p) % 2 == 1);
+    let there = match start {
+        StartParagraph::Anywhere => true,
+        StartParagraph::NextColumn => at_top,
+        StartParagraph::NextFrame => frame_top,
+        StartParagraph::NextPage => page_top,
+        StartParagraph::NextOddPage => page_top && odd != Some(false),
+        StartParagraph::NextEvenPage => page_top && odd != Some(true),
+    };
+    (!there).then_some(start)
+}
+
+/// The end of the rows placed together from row `r`: the rows kept with it (`kept`) when they
+/// fit `room` (an empty column's), else those its merged cells hold together (`held`). Rows of a
+/// kept run that can't fit then all break as if not kept (up to `loose`), as in InDesign: the
+/// run fills the column rather than moving its later rows on.
+fn next_group(heights: &[f64], r: usize, (kept, held): (usize, usize), room: f64, loose: &mut usize) -> usize {
+    let (kept, held) = (kept.max(r + 1), held.max(r + 1));
+    if r >= *loose && heights[r..kept].iter().sum::<f64>() <= room + 0.01 {
+        return kept;
+    }
+    *loose = (*loose).max(kept);
+    held
+}
+
+/// Keep with Next Row: where each row's group ends when the rows kept with the next stay with
+/// it (`group_end`: the groups merged cells hold together). A row moves on to the next column
+/// only with the rows after it; unlike merged cells, InDesign lets go of the keep when the rows
+/// can't fit an empty column.
+fn keep_groups(table: &Table, group_end: &[usize], body_end: usize) -> Vec<usize> {
+    let mut keep_end = group_end.to_vec();
+    for r in (0..body_end).rev() {
+        let e = group_end[r];
+        // A row with a start option ends the kept run before it, so it can start where it asks.
+        if e < body_end && table.rows[e - 1].keep_with_next && table.rows[e].start == StartParagraph::Anywhere {
+            keep_end[r] = keep_end[e];
+        }
+    }
+    keep_end
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.

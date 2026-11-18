@@ -13,6 +13,41 @@ fn session_with_frame() -> (Session, u64, u64) {
     (s, sid, fid)
 }
 
+#[test]
+fn kept_pair_and_merged_explanation_move_with_the_cell_footnote() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+    let f = s.execute("frame.create", &json!({"rect":[36,36,436,236],"content":"text","text":"Before.\n"})).unwrap();
+    let sid = f["story"].as_u64().unwrap();
+    let next = s.execute("frame.create", &json!({"spread":1,"rect":[36,36,436,236],"content":"text"})).unwrap();
+    s.execute("text.thread", &json!({"from":f["id"],"to":next["id"]})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":8,"focus":8})).unwrap();
+    let tid = s.execute("table.insert", &json!({"rows":3,"cols":2,"width":400})).unwrap()["table"].clone();
+    for (r, h) in [(0, 65), (1, 50), (2, 50)] {
+        s.execute("table.setRowHeight", &json!({"story":sid,"table":tid,"row":r,"height":h,"mode":"exactly"})).unwrap();
+    }
+    s.execute("table.merge", &json!({"story":sid,"table":tid,"row":2,"cols":[0,1]})).unwrap();
+    s.execute("table.setCell", &json!({"story":sid,"table":tid,"row":1,"col":0,"text":"Pair"})).unwrap();
+    s.execute("table.setCell", &json!({"story":sid,"table":tid,"row":2,"col":0,"text":"Explanation"})).unwrap();
+    s.execute("table.select", &json!({"story":sid,"table":tid,"row":1,"col":0})).unwrap();
+    s.execute("text.move", &json!({"dir":"storyEnd"})).unwrap();
+    s.execute("footnote.insert", &json!({"text":"Source one.\nSource two.\nSource three.\nSource four."})).unwrap();
+    s.execute("footnote.options", &json!({"columns":2,"columnGutter":17})).unwrap();
+    s.execute("table.rowOptions", &json!({"story":sid,"table":tid,"row":1,"keepWithNext":true})).unwrap();
+    let table = s.execute("table.get", &json!({"story":sid,"table":tid})).unwrap();
+    assert_eq!(table["rows"][1]["keepWithNext"], true);
+    assert!(s.execute("table.rowOptions", &json!({"story":sid,"table":tid,"row":1,"keepWithNext":"yes"})).is_err());
+    let cs = s.cache.get(&s.doc().unwrap().doc, doc::StoryId(sid), None);
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].tables[0].cells.iter().map(|c| c.row).collect::<Vec<_>>(), [0, 0]);
+    assert!(cs.frames[0].notes.is_empty());
+    let rows: Vec<_> = cs.frames[1].tables.iter().flat_map(|t| &t.cells).map(|c| c.row).collect();
+    assert_eq!(rows, [1, 1, 2]);
+    assert_eq!(cs.frames[1].notes.len(), 2);
+    assert!(cs.frames[1].notes.iter().all(|n| n.rect.y0 >= cs.frames[1].tables[0].rect.y1));
+    assert!((cs.frames[1].notes[1].rect.x0 - cs.frames[1].notes[0].rect.x0 - 208.5).abs() < 0.01);
+}
+
 fn check(s: &Session) {
     s.doc().unwrap().doc.check().unwrap();
 }
