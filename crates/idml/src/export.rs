@@ -87,6 +87,175 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
         ex.warnings
             .push("IDML cannot retain commentary stream routes or hidden note references; comments are exported as ordinary footnotes.".into());
     }
+    if doc.placed_items().iter().any(|item| item.text_frame().is_some_and(|f| f.options.inset_columns.is_some())) {
+        ex.warnings.push("IDML cannot retain inset-column geometry; export PDF for the composed stream layout.".into());
+    }
+    if doc.text_variables.iter().any(|v| matches!(v.kind, designcraft_doc::vars::VarKind::NextPageFirstWord { .. })) {
+        ex.warnings.push("IDML cannot retain catchwords; they export as empty custom-text variables.".into());
     }
     if any_footnote(doc, |note| doc.note_options(note.series).body_hidden) {
         ex.warnings.push("IDML cannot retain hidden note body labels; notes are exported with ordinary footnote numbers and separators.".into());
+    }
+    let parts = ex.build();
+    (zip_parts(&parts), ex.warnings)
+}
+
+/// Test exported footnotes in roots and embedded cell/note stories without recursive walking.
+fn any_footnote(doc: &Document, mut predicate: impl FnMut(&designcraft_doc::Footnote) -> bool) -> bool {
+    let mut pending: Vec<&Story> = doc.stories.values().map(AsRef::as_ref).collect();
+    let mut seen = HashSet::new();
+    while let Some(story) = pending.pop() {
+        if !seen.insert(std::ptr::from_ref(story)) {
+            continue;
+        }
+        if story.notes.iter().any(|note| predicate(note)) {
+            return true;
+        }
+        pending.extend(story.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
+        pending.extend(story.notes.iter().chain(&story.endnotes).map(|note| &note.text));
+    }
+    false
+}
+
+fn zip_parts(parts: &[(String, Vec<u8>)]) -> Vec<u8> {
+    craft_idml::write_package(parts).unwrap_or_default()
+}
+
+struct Ex<'a> {
+    d: &'a Document,
+    opts: &'a ExportOptions,
+    next: u64,
+    swatch_ids: HashMap<String, String>,
+    fonts: BTreeMap<String, BTreeSet<String>>,
+    /// Item id → (prev frame, next frame) for threaded text frames.
+    threads: HashMap<u64, (Option<u64>, Option<u64>)>,
+    /// Cross-reference sources written so far: (Self, target anchor).
+    xref_sources: Vec<(String, u64)>,
+    /// `HyperlinkTextSource`s written into the stories: (Self, index in `Document::hyperlinks`).
+    /// A link whose text crosses a paragraph gets one source per paragraph, since the element
+    /// nests inside a `ParagraphStyleRange` (#1446).
+    link_text_sources: Vec<(String, usize)>,
+    /// Index topic path → first serialized sort key; See / See also cross-references.
+    index_topics: BTreeMap<Vec<String>, String>,
+    index_xrefs: Vec<(Vec<String>, &'static str, String)>,
+    /// Bytes of image data written into `<Contents>` so far (see [`MAX_EMBEDDED_BYTES`]).
+    embedded: usize,
+    embed_limit: usize,
+    /// Images written as links because the embed limit was reached (one line per placement).
+    warnings: Vec<String>,
+    /// Object style name → whether its chain or `[None]` sets corners, found once per style.
+    style_corners: HashMap<String, bool>,
+}
+
+/// Image bytes one export embeds, counting each placement (IDML holds a copy per placement): past
+/// it a graphic that has a link of its own is written as that link without its contents (an
+/// image with no link is always embedded: it has nowhere else to live).
+const MAX_EMBEDDED_BYTES: usize = 512 * 1024 * 1024;
+
+impl<'a> Ex<'a> {
+    fn new(d: &'a Document, opts: &'a ExportOptions) -> Self {
+        let mut ex = Ex {
+            d,
+            opts,
+            next: d.next_id.saturating_add(0x100),
+            swatch_ids: HashMap::new(),
+            fonts: BTreeMap::new(),
+            threads: HashMap::new(),
+            xref_sources: Vec::new(),
+            link_text_sources: Vec::new(),
+            index_topics: BTreeMap::new(),
+            index_xrefs: Vec::new(),
+            embedded: 0,
+            embed_limit: MAX_EMBEDDED_BYTES,
+            warnings: Vec::new(),
+            style_corners: HashMap::new(),
+        };
+        ex.assign_swatch_ids();
+        for s in d.stories.values() {
+            for (i, f) in s.frames.iter().enumerate() {
+                let prev = if i > 0 { Some(s.frames[i - 1].0) } else { None };
+                let next = s.frames.get(i + 1).map(|f| f.0);
+                ex.threads.insert(f.0, (prev, next));
+            }
+        }
+        ex
+    }
+
+    fn fresh(&mut self) -> String {
+        self.next += 1;
+        uid(self.next)
+    }
+
+    fn assign_swatch_ids(&mut self) {
+        let mut used: HashSet<String> = ["Swatch/None", "Color/Paper", "Color/Black", "Color/Registration"].iter().map(ToString::to_string).collect();
+        self.swatch_ids.insert(swatch::NONE.into(), "Swatch/None".into());
+        self.swatch_ids.insert(swatch::PAPER.into(), "Color/Paper".into());
+        self.swatch_ids.insert(swatch::BLACK.into(), "Color/Black".into());
+        self.swatch_ids.insert(swatch::REGISTRATION.into(), "Color/Registration".into());
+        for s in &self.d.swatches {
+            if self.swatch_ids.contains_key(&s.name) {
+                continue;
+            }
+            let kind = match s.value {
+                SwatchValue::Tint { .. } => "Tint",
+                SwatchValue::Gradient { .. } => "Gradient",
+                SwatchValue::None => "Swatch",
+                _ => "Color",
+            };
+            let base = format!("{kind}/{}", escape_id(&s.name));
+            let mut id = base.clone();
+            let mut n = 2;
+            while used.contains(&id) {
+                id = format!("{base} {n}");
+                n += 1;
+            }
+            used.insert(id.clone());
+            self.swatch_ids.insert(s.name.clone(), id);
+        }
+    }
+
+    fn sw(&self, name: &str) -> String {
+        self.swatch_ids.get(name).cloned().unwrap_or_else(|| "Swatch/None".into())
+    }
+
+    fn build(&mut self) -> Vec<(String, Vec<u8>)> {
+        let d = self.d;
+        let mut parts = Vec::new();
+        // Stories first (they register fonts).
+        let mut story_parts = Vec::new();
+        for s in d.stories.values() {
+            let name = format!("Stories/Story_{}.xml", uid(s.id.0));
+            let el = self.story_el(s);
+            story_parts.push((name, document(&pkg_root("Story").child(el))));
+        }
+        let styles = self.styles_part();
+        let mut masters = Vec::new();
+        for sp in &d.parents {
+            let name = format!("MasterSpreads/MasterSpread_{}.xml", uid(sp.id.0));
+            let el = self.spread_el(sp, true);
+            masters.push((name, document(&pkg_root("MasterSpread").child(el))));
+        }
+        let mut spreads = Vec::new();
+        for (si, sp) in d.spreads.iter().enumerate() {
+            let name = format!("Spreads/Spread_{}.xml", uid(sp.id.0));
+            let el = self.spread_el_doc(sp, si);
+            spreads.push((name, document(&pkg_root("Spread").child(el))));
+        }
+        let graphic = self.graphic_part();
+        let fonts = self.fonts_part();
+        let prefs = self.prefs_part();
+        let designmap = self.designmap(&masters, &spreads, &story_parts);
+
+        parts.push(("META-INF/container.xml".to_string(), CONTAINER.as_bytes().to_vec()));
+        parts.push(("META-INF/metadata.xml".to_string(), metadata_xmp(d).into_bytes()));
+        parts.push(("designmap.xml".to_string(), designmap));
+        parts.push(("Resources/Graphic.xml".to_string(), graphic));
+        parts.push(("Resources/Fonts.xml".to_string(), fonts));
+        parts.push(("Resources/Styles.xml".to_string(), styles));
+        parts.push(("Resources/Preferences.xml".to_string(), prefs));
+        parts.extend(masters);
+        parts.extend(spreads);
+        parts.extend(story_parts);
+        parts
+    }
+}
