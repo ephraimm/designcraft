@@ -87,6 +87,9 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
         ex.warnings
             .push("IDML cannot retain commentary stream routes or hidden note references; comments are exported as ordinary footnotes.".into());
     }
+    if any_footnote(doc, |note| doc.note_options(note.series).body_hidden) {
+        ex.warnings.push("IDML cannot retain hidden note body labels; notes are exported with ordinary footnote numbers and separators.".into());
+    }
     let parts = ex.build();
     (zip_parts(&parts), ex.warnings)
 }

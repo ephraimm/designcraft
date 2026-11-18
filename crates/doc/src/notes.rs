@@ -141,6 +141,9 @@ pub struct FootnoteOptions {
     /// Keep the anchor addressable without printing a reference or taking line width.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub ref_hidden: bool,
+    /// Omit the number and separator before the note text, independently of its reference.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub body_hidden: bool,
     pub ref_char_style: String,
     /// Footnote text formatting.
     pub para_style: String,
@@ -174,6 +177,7 @@ impl Default for FootnoteOptions {
             affix_in: AffixIn::None,
             ref_position: Position::Superscript,
             ref_hidden: false,
+            body_hidden: false,
             ref_char_style: NO_CHAR_STYLE.into(),
             para_style: BASIC_PARAGRAPH.into(),
             separator: "\t".into(),
