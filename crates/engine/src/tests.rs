@@ -2773,3 +2773,21 @@ fn preflight_hebrew_page_number_range() {
         assert!(result["issues"].as_array().unwrap().iter().all(|i| i["kind"] != "hebrewNumberRange"));
     }
 }
+
+#[test]
+fn footnote_columns_options_validate_and_read_back() {
+    let mut s = session();
+    let series = s.execute("footnote.series.create", &json!({"name":"Sources", "columns":2,"columnGutter":17})).unwrap()["id"].clone();
+    let options = s.execute("footnote.series.options", &json!({"series":series})).unwrap();
+    assert_eq!(options["columns"], 2);
+    assert_eq!(options["columnGutter"], 17.0);
+    assert!(s.execute("footnote.series.options", &json!({"series":series,"columns":5})).is_err());
+    let v = s.execute("footnote.options", &json!({"columns":2,"columnGutter":17})).unwrap();
+    assert_eq!(v["columns"], 2);
+    assert_eq!(v["columnGutter"], 17.0);
+    assert_eq!(s.execute("footnote.options", &json!({})).unwrap(), v);
+    for p in [json!({"columns":0}), json!({"columns":5}), json!({"columnGutter":-1}), json!({"columnGutter":145})] {
+        assert!(s.execute("footnote.options", &p).unwrap_err().to_string().contains("columns must"));
+        assert_eq!(s.execute("footnote.options", &json!({})).unwrap(), v);
+    }
+}

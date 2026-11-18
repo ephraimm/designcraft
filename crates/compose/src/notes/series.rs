@@ -146,7 +146,13 @@ impl Notes {
                     } else if ms.is_empty() {
                         0.0
                     } else {
-                        stack_height(&ms, o.space_between) + o.space_before
+                        {
+                            let width = s.column(NoteColumn { column_index: ci, ..column }).width;
+                            let (count, _) = s.geometry(doc, width);
+                            let texts: Vec<_> = s.placed.iter().filter(|p| s.same_area(p, column.frame_index, ci)).map(|p| p.text.clone()).collect();
+                            (if count == 1 { stack_height(&ms, o.space_between) } else { super::columns::balance(&texts, count, o.space_between).0 })
+                                + o.space_before
+                        }
                     };
                 }
             }

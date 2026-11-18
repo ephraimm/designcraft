@@ -156,6 +156,11 @@ pub struct FootnoteOptions {
     /// Allow Split Footnotes: continue long notes across columns and frames.
     /// Each part obeys the note paragraphs' widow/orphan and keep options.
     pub allow_split: bool,
+    /// Independent columns within each column-foot note area.
+    #[serde(skip_serializing_if = "one_column")]
+    pub columns: u8,
+    #[serde(skip_serializing_if = "default_gutter")]
+    pub column_gutter: f64,
     /// Rule above the first footnote in a column.
     pub rule: NoteRule,
 }
@@ -181,6 +186,8 @@ impl Default for FootnoteOptions {
             first_baseline_min: 0.0,
             span_columns: false,
             allow_split: true,
+            columns: 1,
+            column_gutter: 12.0,
             rule: NoteRule::default(),
         }
     }
@@ -189,6 +196,9 @@ impl Default for FootnoteOptions {
 impl FootnoteOptions {
     /// Validate layout dimensions at command and native-file boundaries.
     pub fn check(&self) -> Result<(), String> {
+        if !(1..=4).contains(&self.columns) || !self.column_gutter.is_finite() || !(0.0..=144.0).contains(&self.column_gutter) {
+            return Err("columns must be 1–4 and columnGutter must be 0–144 pt".into());
+        }
         if let NotePlacement::Margin { gap, width, .. } = self.placement
             && (!gap.is_finite() || gap < 0.0 || !width.is_finite() || width <= 0.0 || width > 1.0e6)
         {
@@ -206,6 +216,19 @@ impl FootnoteOptions {
         Ok(())
     }
 
+    /// Reduce the requested count until every note column is at least 36 pt wide.
+    /// The single-column fallback retains even a very narrow area's positive width.
+    pub fn column_geometry(&self, width: f64) -> (usize, f64) {
+        let width = if width.is_finite() { width.max(f64::EPSILON) } else { 1.0 };
+        let gutter = if self.column_gutter.is_finite() { self.column_gutter.clamp(0.0, 144.0) } else { 12.0 };
+        for count in (2..=usize::from(self.columns.clamp(1, 4))).rev() {
+            let w = (width - gutter * (count - 1) as f64) / count as f64;
+            if w >= 36.0 {
+                return (count, w);
+            }
+        }
+        (1, width)
+    }
     /// The number as shown at the reference (`text == false`) or before the footnote text.
     pub fn label(&self, n: u32, text: bool) -> String {
         let num = self.style.format(n);
@@ -217,6 +240,13 @@ impl FootnoteOptions {
         };
         if affix { format!("{}{num}{}", self.prefix, self.suffix) } else { num }
     }
+}
+
+fn one_column(value: &u8) -> bool {
+    *value == 1
+}
+fn default_gutter(value: &f64) -> bool {
+    *value == 12.0
 }
 
 impl Story {

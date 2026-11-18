@@ -2,6 +2,10 @@
 
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-16 · **Change:** minor (gap 7 closed: pull-request quality gate already runs; linked placed images and multi-image place; gap 20: automatic recovery moved off the interface thread; gap 21 shrunk: pt-BR translates the whole interface; placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
+### Footnote layout
+- **Have:** independent balanced note columns and gutter, with spanning areas and a narrow-area fallback (#1120).
+
+
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
 Numbers and weights are in [target-app-parity.md](target-app-parity.md); the plan is in
@@ -166,7 +170,14 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
   including RTL and nested tables (#2612), and print at the column foot with body notes (#2611).
 - **Limit:** page/spread/section restarts use the table's pre-pagination page for every cell when a
   table breaks across pages; numbering per placed row fragment remains open.
+
+### Footnote layout
+- **Have:** independent balanced note columns and gutter, with spanning areas and a narrow-area fallback (#1120).
+
 - **Estimate:** 25–40 h.
+
+### Footnote layout
+- **Have:** independent balanced columns within each footnote area, including spanning areas; configurable gutter and narrow-area fallback (#1120).
 
 ### 13. Hyphenation and spelling languages (T, L)
 - **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian, Danish, Greek, German (2006 reform), French, Italian and Dutch; spelling for
@@ -202,7 +213,7 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
   Profile / Edit Original, File ▸ Open PDF / Document and Print Presets / User
   Settings, Type ▸ Size presets, Table ▸ Table Options / Cell Options submenus, Paste Before/After,
   Convert Columns, Object ▸ Interactive ▸ Convert to (form fields),
-  View ▸ Extras badges and Story Editor options (Show/Hide Depth Ruler is there). Overriding a
+  View ▸ Extras badges and Story Editor options (Show/Hide Depth Ruler and Show/Hide Style Name Column are there). Overriding a
   base parent's items on a parent spread itself (overrides work on document pages only); Save
   as Parent; new parents for an alternate layout (its pages keep their source pages' parents).
 - **Estimate:** 40–70 h (most are thin wrappers over existing engine features).
@@ -289,6 +300,11 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Missing:** screen-reader exposure of panels and dialogs (egui AccessKit coverage unverified);
   PDF/UA validation of exports. **Estimate:** 15–25 h.
 
+### 29. Document tabs can't be reordered (U)
+- **Missing:** dragging a document tab to reorder it, and dragging it out into its own window. Tabs scroll,
+  list every document and keep the active one in view when they overflow.
+- **Estimate:** 3–5 h.
+
 ## Out of scope (by design)
 
 Adobe cloud services (CC Libraries, Stock, Adobe Fonts activation, Publish Online, Share for
@@ -302,6 +318,10 @@ Cue. These are excluded from every percentage.
 | 2026-11-15 | trivial | Gap 7 closed: the quality gate already runs on every pull request and push to main (#1352) |
 | 2026-11-14 | minor | Gaps 19 and 20 shrunk: placed files are linked with proxies and a hash (save format 5); multi-image place cursor, grid and contact sheet |
 | 2026-11-13 | minor | Gap 12: table-cell notes share the column foot and the story's numbering sequence; cell-note editing remains open (#2611, #2612) |
+
+### Footnote layout
+- **Have:** independent balanced note columns and gutter, with spanning areas and a narrow-area fallback (#1120).
+
 | 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,936 of 2,939 strings, all but three Control panel captions (61% before) |
 | 2026-10-22 | minor | Gap 26 shrunk: autoflow threads a frame per column on the pages that follow the story's last frame, then adds pages at the end of the document |
 | 2026-10-19 | minor | Gap 28 added for remaining placed-PDF font embedding, substitution or outlining; visible unembedded font detection now ships in PDF/X-4 export and `validate-pdf`, with invisible text exempt and operation- or depth-limited checks reported incomplete (#909) |

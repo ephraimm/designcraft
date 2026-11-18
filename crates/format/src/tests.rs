@@ -986,3 +986,16 @@ fn commentary_stream_routes_and_hidden_refs_survive_native_roundtrip() {
     assert_eq!(tf.options.note_stream, Some(NoteStream { story: host, series: 0 }));
     reopened.check().unwrap();
 }
+
+#[test]
+fn footnote_columns_native_roundtrip() {
+    let mut d = Document::new(&NewDocument::default());
+    let defaults = serde_json::to_value(&d.footnote_options).unwrap();
+    assert!(defaults.get("columns").is_none());
+    assert!(defaults.get("columnGutter").is_none());
+    d.footnote_options.columns = 2;
+    d.footnote_options.column_gutter = 17.0;
+    let restored = load(&save(&d).unwrap()).unwrap();
+    assert_eq!(restored.footnote_options.columns, 2);
+    assert_eq!(restored.footnote_options.column_gutter, 17.0);
+}

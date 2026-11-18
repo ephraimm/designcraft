@@ -14,6 +14,8 @@
 //! With Span Footnotes Across Columns the notes of a frame share one area across all its columns,
 //! composed at the frame's text width: every column of the frame makes room for it.
 
+mod columns;
+
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
@@ -139,6 +141,7 @@ pub struct NoteNumber {
 
 pub(super) struct SeriesNotes {
     series: u64,
+    nested: bool,
     members: Vec<bool>,
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
@@ -168,6 +171,7 @@ impl SeriesNotes {
             start.unwrap_or(NoteNumber { num: if has_notes_or_tables(story) { doc.footnote_series_start(story.id, series) } else { 1 }, key: None });
         Self {
             series,
+            nested,
             members: story.notes.iter().map(|n| nested || doc.note_series_id(n.series) == series).collect(),
             numbers: vec![start.num; refs.len()],
             refs,
@@ -179,6 +183,11 @@ impl SeriesNotes {
             notes: story.notes.clone(),
             span: doc.note_options(series).span_columns,
         }
+    }
+
+    fn geometry(&self, doc: &Document, width: f64) -> (usize, f64) {
+        let o = doc.note_options(self.series);
+        if !self.nested && matches!(o.placement, designcraft_doc::NotePlacement::ColumnFoot) { o.column_geometry(width) } else { (1, width) }
     }
 
     fn owns(&self, k: usize) -> bool {
@@ -292,6 +301,7 @@ impl SeriesNotes {
         heights: &[(f64, f64)],
     ) -> Vec<Option<Part>> {
         let o = doc.note_options(self.series);
+        let (_, w) = self.geometry(doc, w);
         let shown = format!("{label}{}", o.separator);
         // Page identity and earlier part areas affect variables and threaded note breaks.
         let key =
@@ -385,6 +395,9 @@ impl SeriesNotes {
         if !doc.note_options(self.series).allow_split || !available.is_finite() || available <= 0.0 {
             return None;
         }
+        let (count, width) = self.geometry(doc, column.width);
+        let prefix =
+            if count > 1 { self.area_texts(doc, column, extra.get(..extra.len().saturating_sub(1)).unwrap_or_default(), opts) } else { Vec::new() };
         let pending = self.pending(column);
         let (k, mut heights, ms, original) = if let Some((&k, before)) = extra.split_last() {
             // If the carry must split too, move this referencing line on as before.
@@ -392,7 +405,7 @@ impl SeriesNotes {
                 return None;
             }
             let ms = self.metrics(doc, column, before, opts);
-            if stack_height(&ms, doc.note_options(self.series).space_between) > available {
+            if count == 1 && stack_height(&ms, doc.note_options(self.series).space_between) > available {
                 return None;
             }
             // A second carry would discard the first note's remainder.
@@ -412,9 +425,9 @@ impl SeriesNotes {
                 + original.1.lead
                 - original.1.first
         });
-        let mut h = available - offset;
+        let mut h = if count > 1 { available * count as f64 } else { available - offset };
         let part = heights.len();
-        heights.push((column.width, h));
+        heights.push((width, h));
         // Ordinary text frames fit baselines, but a footnote stack also includes descent.
         // Each retry drops its last line; the unsplit remainder bounds the attempts.
         let attempts = original.0.frames.first().map_or(0, |f| f.lines.len());
@@ -422,10 +435,20 @@ impl SeriesNotes {
             if !h.is_finite() || h <= 0.0 {
                 return None;
             }
-            *heights.get_mut(part)? = (column.width, h);
+            *heights.get_mut(part)? = (width, h);
             let parts = self.compose_parts(doc, k, column.width, column.frame, opts, &heights);
             let (text, m) = parts.get(part).and_then(Clone::clone)?;
-            let total = stack_height(ms.iter().chain(std::iter::once(&m)), doc.note_options(self.series).space_between);
+            let total = if count == 1 {
+                stack_height(ms.iter().chain(std::iter::once(&m)), doc.note_options(self.series).space_between)
+            } else {
+                let mut texts = prefix.clone();
+                // With no new reference, the final prefix item is this carry's unsplit remainder.
+                if extra.is_empty() && self.pending(column).is_some() {
+                    texts.pop();
+                }
+                texts.push(text.clone());
+                columns::balance(&texts, count, doc.note_options(self.series).space_between).0
+            };
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
                 return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, text, m });
             }
@@ -443,18 +466,40 @@ impl SeriesNotes {
         self.reserve_metrics(doc, column, extra, &[], opts)
     }
 
+    fn area_texts(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> Vec<Arc<ComposedStory>> {
+        let mut texts: Vec<_> =
+            self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.text.clone()).collect();
+        if let Some(c) = self.pending(column)
+            && let Some((text, _)) = self.remainder(doc, &c, column, opts)
+        {
+            texts.push(text);
+        }
+        for &k in extra {
+            texts.push(self.compose(doc, k, column.width, column.frame, opts).0);
+        }
+        texts
+    }
+
     fn reserve_metrics(&mut self, doc: &Document, column: NoteColumn<'_>, own: &[usize], cells: &[CellNote], opts: &ComposeOptions) -> f64 {
         let o = doc.note_options(self.series);
         let (space_between, space_before) = (o.space_between, o.space_before);
+        let (count, _) = self.geometry(doc, column.width);
+        let mut texts = self.area_texts(doc, column, own, opts);
         let mut ms = self.metrics(doc, column, own, opts);
         for n in cells {
             // A note placed already (here or in another column) counts once.
             if self.placed.iter().any(|p| p.source == n.source) {
                 continue;
             }
-            ms.push(self.compose_note(doc, n.source, &n.label, &n.note, (column.width, column.frame), opts).1);
+            let (text, m) = self.compose_note(doc, n.source, &n.label, &n.note, (column.width, column.frame), opts);
+            texts.push(text);
+            ms.push(m);
         }
-        if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before }
+        if ms.is_empty() {
+            0.0
+        } else {
+            (if count == 1 { stack_height(&ms, space_between) } else { columns::balance(&texts, count, space_between).0 }) + space_before
+        }
     }
 
     pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
@@ -535,7 +580,10 @@ impl SeriesNotes {
         for (fi, ci) in groups {
             let (Some(_), Some(col)) = (frames.get(fi), cols.get(fi).filter(|c| ci < c.len()).and_then(|c| self.area(c, ci))) else { continue };
             let here: Vec<&Placed> = self.placed.iter().filter(|p| self.same_area(p, fi, ci)).collect();
-            let total = stack_height(here.iter().map(|p| &p.m), o.space_between);
+            let (count, width) = self.geometry(doc, col.width());
+            let texts: Vec<_> = here.iter().map(|p| p.text.clone()).collect();
+            let (total, fragments) = columns::balance(&texts, count, o.space_between);
+            let total = if count == 1 { stack_height(here.iter().map(|p| &p.m), o.space_between) } else { total };
             let top = col.y1 - total;
             let Some(ft) = out.frames.get_mut(fi) else { continue };
             if o.rule.on && o.rule.weight > 0.0 {
@@ -548,6 +596,30 @@ impl SeriesNotes {
                     footnote_rule: true,
                     ..Deco::default()
                 });
+            }
+            if count > 1 {
+                for fragment in fragments {
+                    let Some(p) = here.get(fragment.note) else { continue };
+                    let note = &p.note;
+                    let x = col.x0 + fragment.column as f64 * (width + o.column_gutter);
+                    ft.notes.push(PlacedNote {
+                        id: note.id,
+                        index: match p.source {
+                            NoteSource::Story(k) | NoteSource::Cell { k, .. } => k,
+                        },
+                        series: self.series,
+                        reference_baseline: 0.0,
+                        overflow: false,
+                        column: p.col as u32,
+                        label: p.label.clone(),
+                        origin: Point::new(x, top + fragment.y),
+                        rect: Rect::new(x, top + fragment.top, x + width, top + fragment.bottom),
+                        text: columns::fragment(&p.text, fragment.lines),
+                        note: Arc::clone(note),
+                        source: Arc::from(note.text.text.as_str()),
+                    });
+                }
+                continue;
             }
             // Previous footnote's last baseline and bottom.
             let mut prev: Option<(f64, f64)> = None;
