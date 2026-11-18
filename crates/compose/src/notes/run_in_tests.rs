@@ -66,6 +66,29 @@ fn run_in_false_starts_a_paragraph_and_true_overrides_the_series() {
 }
 
 #[test]
+fn run_in_separator_never_starts_a_line() {
+    // Sweep the shared line's fill so some length puts a break right at the separator.
+    for n in 1..60 {
+        let (mut doc, sid) = sample(NotePlacement::ColumnFoot);
+        let ids: Vec<_> = doc.story(sid).unwrap().notes.iter().map(|n| n.id).collect();
+        let note = doc.story_mut(sid).unwrap().note_mut(ids[1]).unwrap();
+        note.text = Story::with_text(note.text.id, &"Wi ".repeat(n), ParaFormat::default());
+        let cs = crate::compose_story(&doc, sid, &Default::default());
+        let ns = notes(&cs);
+        let previous_last = ns[1].origin.y + ns[1].text.frames[0].lines.last().unwrap().baseline;
+        let inline = (baseline(ns[2]) - previous_last).abs() < 0.01;
+        for (i, line) in ns[2].text.frames.iter().flat_map(|f| &f.lines).enumerate() {
+            // Only a first line that continues the previous note's line may start mid-line.
+            if i == 0 && inline {
+                continue;
+            }
+            let Some(first) = line.glyphs.iter().find(|g| g.adv > 0.0) else { continue };
+            assert!(!first.rendered_char.is_whitespace() && first.rendered_char != '•', "n={n}: line starts with {:?}", first.rendered_char);
+        }
+    }
+}
+
+#[test]
 fn run_in_stream_frame_and_new_area() {
     let (mut doc, sid) = sample(NotePlacement::Stream);
     let (route, _) =

@@ -286,12 +286,17 @@ impl SeriesNotes {
         run_in: Option<&RunIn>,
     ) -> Vec<Option<Part>> {
         let o = doc.note_options(self.series);
-        let label = format!(
-            "{}{}{}",
-            if run_in.is_some() { &o.run_in_separator } else { "" },
-            o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true),
-            o.separator
-        );
+        // Inline, the separator's leading spaces are no-break so a line never breaks before its
+        // mark (or starts with a space). A note moved to a fresh line drops the separator.
+        let separator = match run_in {
+            Some(run) if run.inline => {
+                let mark = o.run_in_separator.trim_start();
+                let spaces = o.run_in_separator.len() - mark.len();
+                format!("{}{mark}", "\u{a0}".repeat(o.run_in_separator[..spaces].chars().count()))
+            }
+            Some(_) | None => String::new(),
+        };
+        let label = format!("{}{}{}", separator, o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator);
         // Parent frames have no page index: their prefix and section context must also distinguish cached text.
         let current_page = PartPage::of(f);
         let key = (
