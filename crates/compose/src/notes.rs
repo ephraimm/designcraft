@@ -142,6 +142,7 @@ pub struct NoteNumber {
 pub(super) struct SeriesNotes {
     series: u64,
     nested: bool,
+    direction: designcraft_doc::TextDirection,
     members: Vec<bool>,
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
@@ -172,6 +173,7 @@ impl SeriesNotes {
         Self {
             series,
             nested,
+            direction: story.direction,
             members: story.notes.iter().map(|n| nested || doc.note_series_id(n.series) == series).collect(),
             numbers: vec![start.num; refs.len()],
             refs,
@@ -601,7 +603,9 @@ impl SeriesNotes {
                 for fragment in fragments {
                     let Some(p) = here.get(fragment.note) else { continue };
                     let note = &p.note;
-                    let x = col.x0 + fragment.column as f64 * (width + o.clamped_column_gutter());
+                    let physical =
+                        if self.direction == designcraft_doc::TextDirection::RightToLeft { count - 1 - fragment.column } else { fragment.column };
+                    let x = col.x0 + physical as f64 * (width + o.clamped_column_gutter());
                     ft.notes.push(PlacedNote {
                         id: note.id,
                         index: match p.source {
