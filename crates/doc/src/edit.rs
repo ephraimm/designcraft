@@ -1249,7 +1249,7 @@ mod placed_item_tests {
         );
         for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
             let mut outer = Story::new(sid);
-            outer.notes.push(Arc::new(crate::Footnote { id: 1, series: 0, text: story }));
+            outer.notes.push(Arc::new(crate::Footnote { id: 1, series: 0, run_in: None, text: story }));
             story = outer;
         }
         d.stories.insert(sid, Arc::new(story));

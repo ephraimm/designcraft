@@ -19,6 +19,8 @@ struct Candidate {
     index: usize,
     frame: usize,
     note: usize,
+    series: u64,
+    joined: Vec<usize>,
     current_top: f64,
     to_local: Affine,
     bottom_limit: f64,
@@ -73,6 +75,15 @@ fn candidates(
             requested.y0 += unstack;
             requested.y1 += unstack;
             let requested = xf.transform_rect_bbox(requested);
+            // Keep a run-in line together when another story displaces its physical margin stack.
+            if !first.first_in_para
+                && let Some(previous) =
+                    out.last_mut().filter(|c| c.story == cs.story && c.frame == fi && c.series == n.series && c.page == page && c.left == left)
+            {
+                previous.height = previous.height.max(physical.y1 - previous.current_top);
+                previous.joined.push(ni);
+                continue;
+            }
             out.push(Candidate {
                 page,
                 left,
@@ -84,6 +95,8 @@ fn candidates(
                 index: n.index,
                 frame: fi,
                 note: ni,
+                series: n.series,
+                joined: Vec::new(),
                 current_top: physical.y0,
                 to_local,
                 bottom_limit: page_spec.margin_rect().y1,
@@ -139,17 +152,19 @@ pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOpt
         if c.story != sid {
             continue;
         }
-        let Some(n) = out.frames.get_mut(c.frame).and_then(|f| f.notes.get_mut(c.note)) else { continue };
         let delta = (c.to_local * Point::new(0.0, top - c.current_top)) - (c.to_local * Point::ORIGIN);
-        n.origin.x += delta.x;
-        n.origin.y += delta.y;
-        n.rect.x0 += delta.x;
-        n.rect.x1 += delta.x;
-        n.rect.y0 += delta.y;
-        n.rect.y1 += delta.y;
-        n.overflow = bottom > c.bottom_limit + 0.01;
-        if n.overflow {
-            out.warnings.push(format!("Margin note {} in series {} runs below the bottom margin on page {}", n.id, n.series, c.page + 1));
+        for ni in std::iter::once(c.note).chain(c.joined) {
+            let Some(n) = out.frames.get_mut(c.frame).and_then(|f| f.notes.get_mut(ni)) else { continue };
+            n.origin.x += delta.x;
+            n.origin.y += delta.y;
+            n.rect.x0 += delta.x;
+            n.rect.x1 += delta.x;
+            n.rect.y0 += delta.y;
+            n.rect.y1 += delta.y;
+            n.overflow = c.to_local.inverse().transform_rect_bbox(n.rect).y1 > c.bottom_limit + 0.01;
+            if n.overflow {
+                out.warnings.push(format!("Margin note {} in series {} runs below the bottom margin on page {}", n.id, n.series, c.page + 1));
+            }
         }
     }
 }

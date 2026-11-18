@@ -205,7 +205,7 @@ pub(crate) fn fit_stream_page_for(
         for (fi, part) in placed_parts(doc, story, &notes, input.areas, opts.note_bands) {
             if let Some(frame) = result.frames.get_mut(fi) {
                 frame.content_height = frame.content_height.max(part.rect.y1 - input.areas.get(fi).map_or(0.0, |f| f.area.y0));
-                frame.notes.push(part);
+                super::append_note(&mut frame.notes, part);
             }
         }
     }
@@ -215,7 +215,7 @@ pub(crate) fn fit_stream_page_for(
 fn placed_parts(doc: &Document, story: &Story, notes: &SeriesNotes, areas: &[FrameSpec], bands: bool) -> Vec<(usize, PlacedNote)> {
     let o = doc.note_options(notes.series);
     let mut out = Vec::new();
-    let mut previous: Option<(f64, f64)> = None;
+    let mut previous: Option<(f64, f64, super::NoteMetrics)> = None;
     for (fi, frame) in areas.iter().enumerate() {
         for (ci, area) in frame.columns().iter().enumerate() {
             if !bands {
@@ -227,10 +227,16 @@ fn placed_parts(doc: &Document, story: &Story, notes: &SeriesNotes, areas: &[Fra
                 let y = if bands && first && part.part > 0 && previous.is_some() {
                     area.y0
                 } else {
-                    previous.map_or(area.y0 + o.space_before, |(baseline, _)| baseline + o.space_between + part.m.lead - part.m.first)
+                    previous.map_or(area.y0 + o.space_before + part.m.top_padding(), |(baseline, _, metrics)| {
+                        baseline + o.space_between + metrics.advance_to(part.m) - part.m.first
+                    })
                 };
                 let bottom = y + part.m.last + part.m.descent;
-                let top = if first { y } else { previous.map_or(y, |(_, bottom)| bottom + o.space_between) };
+                let top = if first {
+                    y
+                } else {
+                    previous.map_or(y, |(_, bottom, _)| if part.m.lead <= 0.0 { y + part.m.first - part.m.ascent } else { bottom + o.space_between })
+                };
                 out.push((
                     fi,
                     PlacedNote {
@@ -247,7 +253,7 @@ fn placed_parts(doc: &Document, story: &Story, notes: &SeriesNotes, areas: &[Fra
                         source: Arc::from(note.text.text.as_str()),
                     },
                 ));
-                previous = Some((y + part.m.last, bottom));
+                previous = Some((y + part.m.last, bottom, part.m));
                 first = false;
             }
         }

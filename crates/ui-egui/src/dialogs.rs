@@ -5697,7 +5697,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 "prefix": d.s("prefix"), "suffix": d.s("suffix"), "affixIn": d.s("affixIn"), "bodyHidden": d.b("bodyHidden"), "refPosition": d.s("refPosition"),
                 "refCharStyle": d.s("refCharStyle"), "paraStyle": d.s("paraStyle"),
                 "separator": d.s("separator").replace("^t", "\t").replace("^m", "\u{2003}").replace("^>", "\u{2002}"),
-                "spaceBefore": pt("spaceBefore"), "spaceBetween": pt("spaceBetween"), "firstBaseline": d.s("firstBaseline"),
+                "spaceBefore": pt("spaceBefore"), "spaceBetween": pt("spaceBetween"), "runIn": d.b("runIn"), "runInSeparator": d.s("runInSeparator"), "firstBaseline": d.s("firstBaseline"),
                 "firstBaselineMin": pt("firstBaselineMin"), "spanColumns": d.b("spanColumns"),
                 "rule": {"on": d.b("rule.on"), "weight": pt("rule.weight"), "color": d.s("rule.color"), "width": pt("rule.width"),
                     "offset": pt("rule.offset"), "leftIndent": pt("rule.leftIndent")},
@@ -8856,6 +8856,14 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Space Between Footnotes:"));
             text_field(ui, d, "spaceBetween", 70.0);
             ui.end_row();
+        });
+        let mut run_in = d.b("runIn");
+        if ui.checkbox(&mut run_in, "Run notes into the preceding paragraph").changed() {
+            d.fields.insert("runIn".into(), json!(run_in));
+        }
+        ui.horizontal(|ui| {
+            ui.label("Run-in separator:");
+            text_field(ui, d, "runInSeparator", 100.0);
         });
         head(ui, "First Baseline");
         egui::Grid::new("fn_fb").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {

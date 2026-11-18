@@ -33,6 +33,9 @@ pub struct Footnote {
     /// Independent numbering and layout; absent in older documents.
     #[serde(default, skip_serializing_if = "is_default_series")]
     pub series: u64,
+    /// None follows the series; false starts a paragraph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_in: Option<bool>,
     /// The footnote text (no frames).
     pub text: Story,
 }
@@ -152,6 +155,8 @@ pub struct FootnoteOptions {
     /// Minimum space between the text and the first footnote.
     pub space_before: f64,
     pub space_between: f64,
+    pub run_in: bool,
+    pub run_in_separator: String,
     pub first_baseline: FirstBaseline,
     pub first_baseline_min: f64,
     /// Footnotes span all columns of a multi-column frame (else each column gets its own).
@@ -183,6 +188,8 @@ impl Default for FootnoteOptions {
             separator: "\t".into(),
             space_before: 0.0,
             space_between: 0.0,
+            run_in: false,
+            run_in_separator: " ".into(),
             first_baseline: FirstBaseline::Leading,
             first_baseline_min: 0.0,
             span_columns: false,
@@ -195,6 +202,9 @@ impl Default for FootnoteOptions {
 impl FootnoteOptions {
     /// Validate layout dimensions at command and native-file boundaries.
     pub fn check(&self) -> Result<(), String> {
+        if self.run_in_separator.chars().count() > 64 {
+            return Err("runInSeparator must contain at most 64 characters".into());
+        }
         if let NotePlacement::Margin { gap, width, .. } = self.placement
             && (!gap.is_finite() || gap < 0.0 || !width.is_finite() || width <= 0.0 || width > 1.0e6)
         {
@@ -277,7 +287,7 @@ impl Story {
             max = max.max(id);
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
-            self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, series: 0, text }));
+            self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, series: 0, run_in: None, text }));
         }
     }
 
@@ -481,6 +491,34 @@ mod tests {
             let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
             assert_eq!(roundtrip.allow_split, allow);
         }
+    }
+
+    #[test]
+    fn run_in_roundtrip_and_defaults() {
+        let mut doc = crate::Document::new(&Default::default());
+        doc.footnote_options.run_in = true;
+        doc.footnote_options.run_in_separator = " · ".into();
+        let mut story = st("Main");
+        let id = story.insert_note(0, "Note", Default::default()).unwrap();
+        story.note_mut(id).unwrap().run_in = Some(false);
+        doc.stories.insert(story.id, Arc::new(story));
+        let json = serde_json::to_string(&doc).unwrap();
+        let loaded: crate::Document = serde_json::from_str(&json).unwrap();
+        assert!(loaded.footnote_options.run_in);
+        assert_eq!(loaded.footnote_options.run_in_separator, " · ");
+        assert_eq!(loaded.story(StoryId(1)).unwrap().note(id).unwrap().run_in, Some(false));
+        let old: FootnoteOptions = serde_json::from_str("{}").unwrap();
+        assert!(!old.run_in);
+        assert_eq!(old.run_in_separator, " ");
+    }
+
+    #[test]
+    fn run_in_separator_limit_at_file_boundary() {
+        let mut doc = crate::Document::new(&Default::default());
+        doc.footnote_options.run_in_separator = "א".repeat(65);
+        assert!(doc.check().is_err());
+        doc.footnote_options.run_in_separator = "א".repeat(64);
+        assert!(doc.footnote_options.check().is_ok());
     }
 
     #[test]
