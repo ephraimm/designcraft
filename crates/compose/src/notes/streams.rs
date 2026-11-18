@@ -160,21 +160,30 @@ pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>
                     let y = previous.map_or(area.y0 + o.space_before, |(baseline, _)| baseline + o.space_between + part.m.lead - part.m.first);
                     let bottom = y + part.m.last + part.m.descent;
                     let overflow = bottom > area.y1 + 0.01;
-                    let top = previous.map_or(y, |(_, bottom)| bottom + o.space_between);
+                    let top = previous.map_or(y, |(_, bottom)| {
+                        if part.m.lead <= 0.0 {
+                            y + part.m.first - part.text.frames.first().and_then(|f| f.lines.first()).map_or(0.0, |l| l.ascent)
+                        } else {
+                            bottom + o.space_between
+                        }
+                    });
                     if let Some(ft) = result.frames.get_mut(fi) {
-                        ft.notes.push(PlacedNote {
-                            id: note.id,
-                            index: part.k,
-                            series,
-                            reference_baseline: 0.0,
-                            overflow,
-                            column: ci as u32,
-                            label: o.label(notes.numbers.get(part.k).copied().unwrap_or(o.start_at), true),
-                            origin: Point::new(area.x0, y),
-                            rect: Rect::new(area.x0, top, area.x1, bottom),
-                            text: part.text.clone(),
-                            source: Arc::from(note.text.text.as_str()),
-                        });
+                        super::append_note(
+                            &mut ft.notes,
+                            PlacedNote {
+                                id: note.id,
+                                index: part.k,
+                                series,
+                                reference_baseline: 0.0,
+                                overflow,
+                                column: ci as u32,
+                                label: o.label(notes.numbers.get(part.k).copied().unwrap_or(o.start_at), true),
+                                origin: Point::new(area.x0, y),
+                                rect: Rect::new(area.x0, top, area.x1, bottom),
+                                text: part.text.clone(),
+                                source: Arc::from(note.text.text.as_str()),
+                            },
+                        );
                         ft.content_height = ft.content_height.max(bottom - frame.area.y0);
                     }
                     previous = Some((y + part.m.last, bottom));

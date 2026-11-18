@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Footnote",
             ["Type"],
             None,
-            "{text?, series?} — a footnote reference at the insertion point; the caret moves into the new footnote's text",
+            "{text?, series?, runIn?: bool} — a footnote reference at the insertion point; the caret moves into the new footnote's text",
             in_story_text,
             insert
         ),
@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, runIn?: bool (default false), runInSeparator?: string (default space, at most 64 characters), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Note Series",
             [],
             None,
-            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, …options} → {id}",
+            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → {id}",
             has_doc,
             series_create
         ),
@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Note Series Options",
             [],
             None,
-            "{series, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),
@@ -54,8 +54,17 @@ pub fn specs() -> Vec<CommandSpec> {
             series_delete
         ),
         cmd!(query "footnote.series.list", "Note Series", [], None, "{} → [{id, name, …options}] including series 0", has_doc, series_list),
-        cmd!(query "footnote.list", "Footnotes", [], None, "{story?, series?} → [{story, id, series, index, anchor, text}] in story order", has_doc, list),
+        cmd!(query "footnote.list", "Footnotes", [], None, "{story?, series?} → [{story, id, series, runIn, index, anchor, text}] in story order", has_doc, list),
         cmd!("footnote.setText", "Set Footnote Text", [], None, "{story, id, text} — replaces the footnote's text", has_doc, set_text),
+        cmd!(
+            "footnote.setRunIn",
+            "Set Footnote Run In",
+            [],
+            None,
+            "{story, ids: [note id], runIn: bool|null} — null follows the series",
+            has_doc,
+            set_run_in
+        ),
         cmd!("footnote.delete", "Delete Footnote", [], None, "{story, id} — deletes the reference (and so the footnote)", has_doc, delete),
         cmd!(
             noundo "footnote.goToReference",
@@ -86,6 +95,7 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
+    let run_in = read_run_in(p, "footnote.insert")?;
     let text = super::text_param(p, "text");
     let series = series_id(p, "footnote.insert", true)?;
     require_series(&s.doc()?.doc, series, "footnote.insert")?;
@@ -99,6 +109,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
         if let Some(note) = st.note_mut(id) {
             note.series = series;
+            note.run_in = run_in;
         }
         d.adjust_text_ranges(t.story, r, designcraft_doc::FOOTNOTE_REF.len_utf8());
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
@@ -304,6 +315,42 @@ fn story_id(p: &Value, cmd: &str) -> Result<StoryId> {
     p.get("story").and_then(Value::as_u64).map(StoryId).ok_or_else(|| bad(cmd, "missing story"))
 }
 
+fn read_run_in(p: &Value, command: &str) -> Result<Option<bool>> {
+    match p.get("runIn") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        _ => Err(bad(command, "runIn must be a boolean or null")),
+    }
+}
+
+fn set_run_in(s: &mut Session, p: &Value) -> Result<Value> {
+    let command = "footnote.setRunIn";
+    let sid = story_id(p, command)?;
+    let value = read_run_in(p, command)?;
+    let ids = p
+        .get("ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad(command, "missing ids"))?
+        .iter()
+        .map(|v| v.as_u64().ok_or_else(|| bad(command, "ids must be unsigned integers")))
+        .collect::<Result<Vec<_>>>()?;
+    let story = s.doc()?.doc.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    for id in &ids {
+        if story.note(*id).is_none() {
+            return Err(bad(command, format!("no footnote {id}")));
+        }
+    }
+    s.edit(|d, _| {
+        let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        for id in &ids {
+            if let Some(note) = story.note_mut(*id) {
+                note.run_in = value;
+            }
+        }
+        Ok(json!({"changed": ids.len()}))
+    })
+}
+
 fn note_id(p: &Value, cmd: &str) -> Result<u64> {
     p.get("id").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "missing id"))
 }
@@ -324,7 +371,7 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = Vec::new();
     for st in d.stories.values().filter(|st| only.is_none_or(|o| o == st.id)) {
         for (k, n) in st.notes.iter().enumerate().filter(|(_, n)| p.get("series").and_then(Value::as_u64).is_none_or(|id| n.series == id)) {
-            out.push(json!({"story": st.id.0, "id": n.id, "series": n.series, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
+            out.push(json!({"story": st.id.0, "id": n.id, "series": n.series, "runIn": n.run_in, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
         }
     }
     Ok(Value::Array(out))
@@ -399,6 +446,26 @@ mod tests {
         assert_eq!(s.execute("footnote.options", &json!({"spaceBefore": 2.0})).unwrap()["allowSplit"], true);
         s.execute("footnote.options", &json!({"allowSplit": false})).unwrap();
         assert_eq!(s.execute("footnote.options", &json!({"spaceBefore": 3.0})).unwrap()["allowSplit"], false);
+    }
+
+    #[test]
+    fn run_in_options_override_validation_and_undo() {
+        let (mut s, sid) = session_with_text();
+        let options = s.execute("footnote.options", &json!({"runIn":true,"runInSeparator":" · "})).unwrap();
+        assert_eq!(options["runIn"], true);
+        s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+        let id = s.execute("footnote.insert", &json!({"text":"Note","runIn":false})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(s.execute("footnote.list", &json!({})).unwrap()[0]["runIn"], false);
+        s.execute("footnote.setRunIn", &json!({"story":sid.0,"ids":[id],"runIn":true})).unwrap();
+        assert_eq!(s.execute("footnote.list", &json!({})).unwrap()[0]["runIn"], true);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("footnote.list", &json!({})).unwrap()[0]["runIn"], false);
+        s.execute("footnote.setRunIn", &json!({"story":sid.0,"ids":[id],"runIn":null})).unwrap();
+        assert!(s.execute("footnote.list", &json!({})).unwrap()[0]["runIn"].is_null());
+        assert!(s.execute("footnote.setRunIn", &json!({"story":sid.0,"ids":[id],"runIn":"yes"})).is_err());
+        assert!(s.execute("footnote.options", &json!({"runInSeparator":"א".repeat(65)})).is_err());
+        assert!(s.execute("footnote.series.create", &json!({"name":"Bad","runInSeparator":"x".repeat(65)})).is_err());
+        assert_eq!(s.execute("footnote.options", &json!({})).unwrap()["runInSeparator"], " · ");
     }
 
     #[test]

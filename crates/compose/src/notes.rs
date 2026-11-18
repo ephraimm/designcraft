@@ -41,10 +41,13 @@ pub(crate) struct Placed {
 /// Vertical metrics of a composed footnote, relative to the top of its composed text.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct NoteMetrics {
+    /// Note owning the paragraph format at the end of this part.
+    owner: usize,
     /// First and last baselines (the first one includes the First Baseline offset).
     pub(super) first: f64,
     pub(super) last: f64,
-    /// Leading of the first line: its baseline's distance below the previous footnote's last.
+    /// First baseline's distance below the previous note's last, before Space Between.
+    /// Run-in cancels that space here; a shared baseline uses `-space_between`.
     pub(super) lead: f64,
     /// Descent of the last line.
     pub(super) descent: f64,
@@ -105,6 +108,16 @@ pub(crate) struct Carry {
     pages: Vec<PartPage>,
     fi: usize,
     col: usize,
+    run_in: Option<RunIn>,
+}
+
+/// Only the first paragraph joins the preceding note; later paragraphs keep their formats.
+#[derive(Clone, Debug)]
+struct RunIn {
+    owner: usize,
+    indent: f64,
+    para: designcraft_doc::ParaFormat,
+    inline: bool,
 }
 
 pub(crate) struct SplitPlan {
@@ -114,11 +127,22 @@ pub(crate) struct SplitPlan {
     pages: Vec<PartPage>,
     text: Arc<ComposedStory>,
     m: NoteMetrics,
+    run_in: Option<RunIn>,
 }
 
 type SeriesSnapshot = (u32, Option<usize>, usize, Option<Carry>);
 type Part = (Arc<ComposedStory>, NoteMetrics);
-type CacheKey = (usize, String, u64, PartPage, Vec<(u64, u64, PartPage)>);
+type CacheKey = (usize, String, u64, PartPage, Vec<(u64, u64, PartPage)>, Option<(usize, u64, bool)>);
+
+fn append_note(notes: &mut Vec<PlacedNote>, note: PlacedNote) {
+    if note.text.frames.first().and_then(|f| f.lines.first()).is_some_and(|l| !l.first_in_para)
+        && let Some(previous) = notes.last_mut().filter(|n| n.series == note.series)
+        && let Some(line) = Arc::make_mut(&mut previous.text).frames.first_mut().and_then(|f| f.lines.last_mut())
+    {
+        line.last_in_para = false;
+    }
+    notes.push(note);
+}
 
 pub(super) struct SeriesNotes {
     series: u64,
@@ -246,8 +270,28 @@ impl SeriesNotes {
         heights: &[(f64, f64)],
         pages: &[PartPage],
     ) -> Vec<Option<Part>> {
+        self.compose_parts_in(doc, k, w, f, opts, heights, pages, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_parts_in(
+        &mut self,
+        doc: &Document,
+        k: usize,
+        w: f64,
+        f: &FrameSpec,
+        opts: &ComposeOptions,
+        heights: &[(f64, f64)],
+        pages: &[PartPage],
+        run_in: Option<&RunIn>,
+    ) -> Vec<Option<Part>> {
         let o = doc.note_options(self.series);
-        let label = format!("{}{}", o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator);
+        let label = format!(
+            "{}{}{}",
+            if run_in.is_some() { &o.run_in_separator } else { "" },
+            o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true),
+            o.separator
+        );
         // Parent frames have no page index: their prefix and section context must also distinguish cached text.
         let current_page = PartPage::of(f);
         let key = (
@@ -263,6 +307,7 @@ impl SeriesNotes {
                     (pw.to_bits(), h.to_bits(), page.clone())
                 })
                 .collect(),
+            run_in.map(|run| (run.owner, run.indent.to_bits(), run.inline)),
         );
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
@@ -311,17 +356,47 @@ impl SeriesNotes {
             })
             .chain(std::iter::once(spec.clone()))
             .collect();
-        let cs = crate::compose(doc, &note.text, &specs, &nopts);
+        let mut text = note.text.clone();
+        if let Some(run) = run_in
+            && let Some(first) = text.paras.first_mut()
+        {
+            *first = run.para.clone();
+            first.para.first_line_indent = Some(run.indent);
+            first.para.space_before = Some(0.0);
+            first.para.drop_cap_lines = Some(0);
+            first.para.drop_cap_chars = Some(0);
+            first.para.list_type = Some(designcraft_doc::ListType::None);
+        }
+        let cs = crate::compose(doc, &text, &specs, &nopts);
+        if let Some(run) = run_in.filter(|run| run.inline)
+            && cs.frames.first().and_then(|f| f.lines.first()).is_some_and(|line| line.glyphs.iter().any(|g| g.x < -0.01 || g.x + g.adv > w + 0.01))
+        {
+            // An unbreakable first word must move to the next line, never overprint its predecessor.
+            let next_line = RunIn { indent: 0.0, inline: false, ..run.clone() };
+            return self.compose_parts_in(doc, k, w, f, opts, heights, pages, Some(&next_line));
+        }
         let parts = cs
             .frames
             .iter()
             .enumerate()
             .map(|(i, ft)| {
                 let (Some(a), Some(z)) = (ft.lines.first(), ft.lines.last()) else { return None };
-                let m = NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent };
+                let m = NoteMetrics {
+                    owner: if z.para == 0 { run_in.map_or(k, |run| run.owner) } else { k },
+                    first: a.baseline,
+                    last: z.baseline,
+                    lead: if i == 0 { run_in.map_or(a.leading, |run| if run.inline { 0.0 } else { a.leading } - o.space_between) } else { a.leading },
+                    descent: z.descent,
+                };
                 let mut frame = ft.clone();
                 // Body frame ranges exclude paragraph separators; parts own those bytes too.
                 frame.range.end = cs.frames.iter().skip(i.saturating_add(1)).find(|f| !f.lines.is_empty()).map_or(note.text.len(), |f| f.range.start);
+                if i == 0
+                    && run_in.is_some()
+                    && let Some(first) = frame.lines.first_mut()
+                {
+                    first.first_in_para = false;
+                }
                 let text = ComposedStory { frames: vec![frame], ..cs.clone() };
                 Some((Arc::new(text), m))
             })
@@ -338,18 +413,80 @@ impl SeriesNotes {
     }
 
     fn remainder(&mut self, doc: &Document, c: &Carry, column: NoteColumn<'_>, opts: &ComposeOptions) -> Option<Part> {
-        self.compose_parts(doc, c.k, column.width, column.frame, opts, &c.heights, &c.pages).get(c.heights.len()).and_then(Clone::clone)
+        self.compose_parts_in(doc, c.k, column.width, column.frame, opts, &c.heights, &c.pages, c.run_in.as_ref())
+            .get(c.heights.len())
+            .and_then(Clone::clone)
+    }
+
+    /// Shared by column feet, stream columns and margins. A new area has no predecessor.
+    fn run_in(&self, doc: &Document, k: usize, width: f64, previous: Option<(usize, &ComposedStory)>) -> Option<RunIn> {
+        let note = self.notes.get(k)?;
+        if !note.run_in.unwrap_or(doc.note_options(self.series).run_in) {
+            return None;
+        }
+        let (pk, text) = previous?;
+        let line = text.frames.first()?.lines.last()?;
+        let previous = self.notes.get(pk)?;
+        let para = previous.text.paras.last()?.clone();
+        // A table anchor owns its paragraph and its story-local table id.
+        if para.table.is_some() || note.text.paras.first()?.table.is_some() {
+            return None;
+        }
+        let (pp, _) = doc.styles.resolve_para(&para);
+        let (own, _) = doc.styles.resolve_para(note.text.paras.first()?);
+        // Joining must not weaken a note's keeps or its required column/frame/page start.
+        if own.start_paragraph != designcraft_doc::StartParagraph::Anywhere
+            || own.keep_lines_together
+            || pp.keep_lines_together
+            || own.keep_with_next > 0
+            || pp.keep_with_next > 0
+        {
+            return None;
+        }
+        let rtl = pp.direction == designcraft_doc::TextDirection::RightToLeft;
+        let end = crate::caret(text, line.range.end).map_or(line.end_x, |(_, x, _, _, _)| x);
+        let indent = if rtl { width - end - pp.right_indent } else { end - pp.left_indent };
+        // A line with no remaining width advances normally instead of forcing an overfull word.
+        if !indent.is_finite() || indent < 0.0 {
+            return None;
+        }
+        let inline = indent < width - pp.left_indent - pp.right_indent - 1.0;
+        Some(RunIn { owner: pk, indent: if inline { indent } else { 0.0 }, para, inline })
+    }
+
+    fn compose_after(
+        &mut self,
+        doc: &Document,
+        k: usize,
+        column: NoteColumn<'_>,
+        opts: &ComposeOptions,
+        previous: Option<(usize, &ComposedStory)>,
+    ) -> Part {
+        let run = self.run_in(doc, k, column.width, previous);
+        self.compose_with_run(doc, k, column, opts, run.as_ref())
+    }
+
+    fn compose_with_run(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions, run: Option<&RunIn>) -> Part {
+        self.compose_parts_in(doc, k, column.width, column.frame, opts, &[], &[], run)
+            .first()
+            .and_then(Clone::clone)
+            .unwrap_or_else(|| (Arc::new(ComposedStory::default()), NoteMetrics::default()))
     }
 
     fn metrics(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> Vec<NoteMetrics> {
-        let mut ms: Vec<_> = self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
+        let here: Vec<_> = self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).collect();
+        let mut previous = here.last().map(|p| (p.m.owner, p.text.clone()));
+        let mut ms: Vec<_> = here.iter().map(|p| p.m).collect();
         if let Some(c) = self.pending(column)
-            && let Some((_, m)) = self.remainder(doc, &c, column, opts)
+            && let Some((text, m)) = self.remainder(doc, &c, column, opts)
         {
             ms.push(m);
+            previous = Some((m.owner, text));
         }
         for &k in extra {
-            ms.push(self.compose(doc, k, column.width, column.frame, opts).1);
+            let (text, m) = self.compose_after(doc, k, column, opts, previous.as_ref().map(|(k, t)| (*k, t.as_ref())));
+            ms.push(m);
+            previous = Some((m.owner, text));
         }
         ms
     }
@@ -367,7 +504,7 @@ impl SeriesNotes {
             return None;
         }
         let pending = self.pending(column);
-        let (k, mut heights, mut pages, ms, original) = if let Some((&k, before)) = extra.split_last() {
+        let (k, mut heights, mut pages, ms, original, run_in) = if let Some((&k, before)) = extra.split_last() {
             // If the carry must split too, move this referencing line on as before.
             if self.carry.is_some() && pending.is_none() {
                 return None;
@@ -380,12 +517,25 @@ impl SeriesNotes {
             if pending.as_ref().is_some_and(|c| self.remainder(doc, c, column, opts).is_none()) {
                 return None;
             }
-            (k, Vec::new(), Vec::new(), ms, self.compose(doc, k, column.width, column.frame, opts))
+            let mut previous =
+                self.placed.iter().rev().find(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| (p.m.owner, p.text.clone()));
+            if let Some(c) = &pending
+                && let Some((text, m)) = self.remainder(doc, c, column, opts)
+            {
+                previous = Some((m.owner, text));
+            }
+            for &pk in before {
+                let (text, m) = self.compose_after(doc, pk, column, opts, previous.as_ref().map(|(k, t)| (*k, t.as_ref())));
+                previous = Some((m.owner, text));
+            }
+            let run = self.run_in(doc, k, column.width, previous.as_ref().map(|(k, t)| (*k, t.as_ref())));
+            let original = self.compose_with_run(doc, k, column, opts, run.as_ref());
+            (k, Vec::new(), Vec::new(), ms, original, run)
         } else {
             let c = pending?;
             let original = self.remainder(doc, &c, column, opts)?;
             let ms = self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
-            (c.k, c.heights, c.pages, ms, original)
+            (c.k, c.heights, c.pages, ms, original, c.run_in)
         };
         let offset = ms.last().map_or(0.0, |last| {
             stack_height(&ms, doc.note_options(self.series).space_between) - last.descent
@@ -405,11 +555,11 @@ impl SeriesNotes {
                 return None;
             }
             *heights.get_mut(part)? = (column.width, h);
-            let parts = self.compose_parts(doc, k, column.width, column.frame, opts, &heights, &pages);
+            let parts = self.compose_parts_in(doc, k, column.width, column.frame, opts, &heights, &pages, run_in.as_ref());
             let (text, m) = parts.get(part).and_then(Clone::clone)?;
             let total = stack_height(ms.iter().chain(std::iter::once(&m)), doc.note_options(self.series).space_between);
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
-                return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, pages, text, m });
+                return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, pages, text, m, run_in });
             }
             let smaller = h.min(m.last - 0.02);
             if smaller >= h {
@@ -429,7 +579,9 @@ impl SeriesNotes {
     }
 
     pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
-        let (text, m) = self.compose(doc, k, column.width, column.frame, opts);
+        let previous =
+            self.placed.iter().rev().find(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| (p.m.owner, p.text.clone()));
+        let (text, m) = self.compose_after(doc, k, column, opts, previous.as_ref().map(|(k, t)| (*k, t.as_ref())));
         self.push(k, 0, text, m, column);
     }
 
@@ -470,8 +622,14 @@ impl SeriesNotes {
     fn place_split(&mut self, plan: SplitPlan, column: NoteColumn<'_>) {
         let part = plan.heights.len().saturating_sub(1);
         self.push(plan.k, part, plan.text, plan.m, column);
-        self.carry =
-            plan.remainder.then_some(Carry { k: plan.k, heights: plan.heights, pages: plan.pages, fi: column.frame_index, col: column.column_index });
+        self.carry = plan.remainder.then_some(Carry {
+            k: plan.k,
+            heights: plan.heights,
+            pages: plan.pages,
+            fi: column.frame_index,
+            col: column.column_index,
+            run_in: plan.run_in,
+        });
     }
 
     /// Stack each column's footnotes against its bottom, rule above the first.
@@ -508,23 +666,27 @@ impl SeriesNotes {
                     None => (top, top),
                     Some((last, bottom)) => {
                         let first = last + o.space_between + p.m.lead;
-                        (first - p.m.first, (bottom + o.space_between).min(first))
+                        let ascent = p.text.frames.first().and_then(|f| f.lines.first()).map_or(0.0, |l| l.ascent);
+                        (first - p.m.first, if p.m.lead <= 0.0 { first - ascent } else { (bottom + o.space_between).min(first) })
                     }
                 };
                 let y1 = y + p.m.last + p.m.descent;
-                ft.notes.push(PlacedNote {
-                    id: note.id,
-                    series: self.series,
-                    reference_baseline: 0.0,
-                    overflow: false,
-                    index: p.k,
-                    column: p.col as u32,
-                    label: o.label(self.numbers.get(p.k).copied().unwrap_or(o.start_at), true),
-                    origin: Point::new(col.x0, y),
-                    rect: Rect::new(col.x0, y0, col.x1, y1),
-                    text: p.text.clone(),
-                    source: Arc::from(note.text.text.as_str()),
-                });
+                append_note(
+                    &mut ft.notes,
+                    PlacedNote {
+                        id: note.id,
+                        series: self.series,
+                        reference_baseline: 0.0,
+                        overflow: false,
+                        index: p.k,
+                        column: p.col as u32,
+                        label: o.label(self.numbers.get(p.k).copied().unwrap_or(o.start_at), true),
+                        origin: Point::new(col.x0, y),
+                        rect: Rect::new(col.x0, y0, col.x1, y1),
+                        text: p.text.clone(),
+                        source: Arc::from(note.text.text.as_str()),
+                    },
+                );
                 prev = Some((y + p.m.last, y1));
             }
         }
@@ -575,7 +737,26 @@ pub fn hit_note(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize)>
 /// [`hit_note`] with the hit test for the note's text (see [`crate::hit_cell_with`]).
 pub fn hit_note_with(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedStory, usize, Point) -> Option<usize>) -> Option<(u64, usize)> {
     let ft = cs.frames.get(fi)?;
-    let n = ft.notes.iter().find(|n| n.rect.contains(p))?;
+    // Run-in fragments share a baseline and can have overlapping bounding rectangles.
+    let n = ft.notes.iter().filter(|n| n.rect.contains(p)).min_by(|a, b| {
+        let distance = |n: &PlacedNote| {
+            n.text
+                .frames
+                .iter()
+                .flat_map(|f| &f.lines)
+                .flat_map(|l| {
+                    l.glyphs.iter().map(move |g| {
+                        let x = p.x - n.origin.x;
+                        let y = p.y - n.origin.y;
+                        let dx = (g.x - x).max(0.0).max(x - g.x - g.adv);
+                        let dy = (l.baseline - l.ascent - y).max(0.0).max(y - l.baseline - l.descent);
+                        dx * dx + dy * dy
+                    })
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        distance(a).total_cmp(&distance(b))
+    })?;
     let local = Point::new(p.x - n.origin.x, p.y - n.origin.y);
     Some((n.id, hit(&n.text, 0, local).unwrap_or(0)))
 }
@@ -591,6 +772,8 @@ pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64
 }
 
 mod page_margins;
+#[cfg(test)]
+mod run_in_tests;
 pub(crate) use page_margins::stack_page_margins;
 
 #[cfg(test)]
