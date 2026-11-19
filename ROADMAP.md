@@ -23,6 +23,8 @@
 
 - **2026-11-19** · Run-in note series and per-note overrides continue comments in one paragraph while retaining anchors, split ranges and editing addresses. Margin reference baselines take precedence. See [run-in notes](docs/run-in-notes.md).
 - **2026-11-18** · Note series can hide the body number and separator with `bodyHidden`, independently of the reference (#2872). Native files retain the option; IDML warns before restoring ordinary footnote labels.
+- 2026-11-19: footnote part ranges stop at nested overset text, including an unplaceable drop word after a fitting paragraph (#1941).
+
 - 2026-11-19: split-footnote fitting treats nonempty notes with no placed part as unplaceable and oversets the parent instead of hiding the note (#1941, #1930).
 - 2026-11-19: IDML export warns when a drop cap's body-size multiplier cannot be retained (#1930).
 
