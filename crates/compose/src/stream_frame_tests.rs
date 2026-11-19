@@ -334,3 +334,81 @@ fn stream_route_includes_pages_without_host_frames_and_invalidates_host_cache() 
     assert!(!Arc::ptr_eq(&before, &after), "stream changes on a page without host text must recompose the host");
     assert_eq!(stream_frame_specs(&doc, host)[2].area.y0, 56.0);
 }
+
+#[test]
+fn a_hidden_normal_reference_after_body_text_keeps_its_stream_anchor() {
+    let (mut doc, host, _) = commentary(1, 1, 100.0);
+    doc.note_series[0].options.ref_position = designcraft_doc::Position::Normal;
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(!cs.is_overset());
+    check_starts(&doc, host, &cs);
+    assert_eq!(cs.frames.iter().map(|f| f.notes.len()).sum::<usize>(), 1);
+}
+
+#[test]
+fn the_first_anchor_advances_to_a_page_with_a_route() {
+    let (mut doc, host, streams) = commentary(2, 1, 100.0);
+    doc.item_mut(streams[0]).unwrap().text_frame_mut().unwrap().options.note_stream = None;
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(!cs.is_overset());
+    check_starts(&doc, host, &cs);
+    assert_eq!(cs.frame(streams[1]).unwrap().notes.len(), 1);
+    assert!(cs.frame(frame_specs(&doc, host)[0].id).unwrap().lines.is_empty());
+}
+
+#[test]
+fn note_options_reflow_cached_cross_reference_pages() {
+    let (mut doc, host, _) = commentary(3, 10, 135.0);
+    let positions: Vec<_> = doc.story(host).unwrap().notes.iter().map(|n| doc.story(host).unwrap().note_anchor(n.id).unwrap()).collect();
+    let anchors: Vec<_> = positions.into_iter().rev().map(|at| doc.story_mut(host).unwrap().insert_anchor(at, "Passage")).collect();
+    let cache = Cache::default();
+    let old = cache.xref_index(&doc);
+    let old_pages: Vec<_> = anchors.iter().map(|id| old.page_index(*id)).collect();
+    doc.note_series[0].options.space_before = 100.0;
+    let fresh = Cache::default().xref_index(&doc);
+    let expected: Vec<_> = anchors.iter().map(|id| fresh.page_index(*id)).collect();
+    assert_ne!(old_pages, expected, "note options must actually change anchor pages");
+    let updated = cache.xref_index(&doc);
+    assert_eq!(anchors.iter().map(|id| updated.page_index(*id)).collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn catchword_main_index_excludes_commentary_only_pages() {
+    let (mut doc, host, _) = commentary(3, 1, 22.0);
+    doc.story_mut(host).unwrap().frames.truncate(1);
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(cs.frames.iter().any(|f| f.range.is_empty() && !f.notes.is_empty()));
+    let words = crate::vars::story_catchwords(&doc, &cs, doc.story(host).unwrap());
+    assert!(!words.contains_key(&1), "commentary frame cannot create a main-source page: {words:?}");
+    assert_eq!(words[&0].1, "");
+}
+
+#[test]
+fn advancing_a_column_foot_carry_does_not_accept_a_rejected_stream_anchor() {
+    let (mut doc, host, _) = commentary(5, 0, 140.0);
+    let body = format!("Opening.\nReference.{}Next reference.\nClosing.", designcraft_doc::story::FRAME_BREAK);
+    let long = (0..60).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let story = doc.story_mut(host).unwrap();
+    story.insert(0, &body);
+    let earlier = story.insert_note(14, &long, Default::default()).unwrap();
+    let at = story.text.find("Next reference.").unwrap() + 5;
+    story.insert_note(at, "Later column-foot note.", Default::default()).unwrap();
+    let stream = story.insert_note(at + FOOTNOTE_REF.len_utf8(), "Routed comment.", Default::default()).unwrap();
+    story.note_mut(stream).unwrap().series = 1;
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(!cs.is_overset());
+    let anchor = doc.story(host).unwrap().note_anchor(stream).unwrap();
+    let body_frames = frame_specs(&doc, host);
+    let anchor_page = body_frames.iter().find(|f| cs.frame(f.id).unwrap().lines.iter().any(|l| l.range.contains(&anchor))).unwrap().page;
+    assert!(anchor_page.unwrap() > 1, "the earlier note must postpone the new reference");
+    let starts: Vec<_> = cs.frames.iter().filter(|f| f.notes.iter().any(|n| n.id == stream && n.text.frames[0].range.start == 0)).collect();
+    assert_eq!(starts.len(), 1, "a rejected main line must not emit an early duplicate comment");
+    let routes = stream_frame_specs(&doc, host);
+    assert_eq!(routes.iter().find(|f| f.id == starts[0].frame).unwrap().page, anchor_page);
+    let mut end = 0;
+    for note in cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == earlier) {
+        assert_eq!(note.text.frames[0].range.start, end);
+        end = note.text.frames[0].range.end;
+    }
+    assert_eq!(end, long.len());
+}

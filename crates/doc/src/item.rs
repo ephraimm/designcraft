@@ -12,8 +12,10 @@ use crate::ids::{AssetId, ItemId, LayerId, StoryId};
 mod content;
 mod effects;
 mod graphic;
+mod inset_columns;
 mod paint;
 mod text_frame;
+pub use inset_columns::{InsetColumns, InsetStream};
 
 pub use content::{Content, Shape};
 pub use effects::{

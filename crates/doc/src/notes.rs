@@ -33,6 +33,9 @@ pub struct Footnote {
     /// Independent numbering and layout; absent in older documents.
     #[serde(default, skip_serializing_if = "is_default_series")]
     pub series: u64,
+    /// None follows the series; false starts a paragraph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_in: Option<bool>,
     /// The footnote text (no frames).
     pub text: Story,
 }
@@ -141,6 +144,9 @@ pub struct FootnoteOptions {
     /// Keep the anchor addressable without printing a reference or taking line width.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub ref_hidden: bool,
+    /// Omit the number and separator before the note text, independently of its reference.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub body_hidden: bool,
     pub ref_char_style: String,
     /// Footnote text formatting.
     pub para_style: String,
@@ -149,12 +155,16 @@ pub struct FootnoteOptions {
     /// Minimum space between the text and the first footnote.
     pub space_before: f64,
     pub space_between: f64,
+    pub run_in: bool,
+    pub run_in_separator: String,
     pub first_baseline: FirstBaseline,
     pub first_baseline_min: f64,
     /// Footnotes span all columns of a multi-column frame (else each column gets its own).
     pub span_columns: bool,
     /// Allow Split Footnotes: continue long notes across columns and frames.
     /// Each part obeys the note paragraphs' widow/orphan and keep options.
+    // Native files predating splitting omit this field and must retain their unsplit layout.
+    #[serde(default)]
     pub allow_split: bool,
     /// Independent columns within each column-foot note area.
     #[serde(skip_serializing_if = "one_column")]
@@ -177,11 +187,14 @@ impl Default for FootnoteOptions {
             affix_in: AffixIn::None,
             ref_position: Position::Superscript,
             ref_hidden: false,
+            body_hidden: false,
             ref_char_style: NO_CHAR_STYLE.into(),
             para_style: BASIC_PARAGRAPH.into(),
             separator: "\t".into(),
             space_before: 0.0,
             space_between: 0.0,
+            run_in: false,
+            run_in_separator: " ".into(),
             first_baseline: FirstBaseline::Leading,
             first_baseline_min: 0.0,
             span_columns: false,
@@ -198,6 +211,9 @@ impl FootnoteOptions {
     pub fn check(&self) -> Result<(), String> {
         if !(1..=4).contains(&self.columns) || !self.column_gutter.is_finite() || !(0.0..=144.0).contains(&self.column_gutter) {
             return Err("columns must be 1–4 and columnGutter must be 0–144 pt".into());
+        }
+        if self.run_in_separator.chars().count() > 64 {
+            return Err("runInSeparator must contain at most 64 characters".into());
         }
         if let NotePlacement::Margin { gap, width, .. } = self.placement
             && (!gap.is_finite() || gap < 0.0 || !width.is_finite() || width <= 0.0 || width > 1.0e6)
@@ -306,7 +322,7 @@ impl Story {
             max = max.max(id);
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
-            self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, series: 0, text }));
+            self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, series: 0, run_in: None, text }));
         }
     }
 
@@ -408,37 +424,78 @@ impl crate::Document {
     /// Adopt additional series by meaning, not by their document-local numeric ids.
     /// Legacy notes still join the destination's series 0, as ordinary footnote paste always did.
     pub fn adopt_note_series(&mut self, story: &mut Story, source: &Self) {
-        if !story.notes.iter().any(|note| source.note_series_id(note.series) != 0) {
-            for note in &mut story.notes {
-                if note.series != 0 {
-                    Arc::make_mut(note).series = 0;
+        let (has_nonzero, has_declared) = {
+            let mut pending = vec![&*story];
+            let (mut nonzero, mut declared) = (false, false);
+            while let Some(text) = pending.pop() {
+                nonzero |= text.notes.iter().any(|note| note.series != 0);
+                declared |= text.notes.iter().any(|note| source.note_series_id(note.series) != 0);
+                if declared {
+                    break;
                 }
+                pending.extend(text.notes.iter().chain(&text.endnotes).map(|note| &note.text));
+                pending.extend(text.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
             }
+            (nonzero, declared)
+        };
+        if !has_nonzero {
             return;
         }
+        let mapped = if has_declared { self.adopt_note_series_ids(source) } else { std::collections::HashMap::new() };
+        // Nested cells and note bodies are clipboard content too. An explicit work list
+        // visits them without consuming the call stack on deeply nested input.
+        let mut pending = vec![story];
+        while let Some(text) = pending.pop() {
+            for note in &mut text.notes {
+                let id = mapped.get(&source.note_series_id(note.series)).copied().unwrap_or(0);
+                if note.series != id {
+                    Arc::make_mut(note).series = id;
+                }
+            }
+            for note in text.notes.iter_mut().chain(&mut text.endnotes) {
+                pending.push(&mut Arc::make_mut(note).text);
+            }
+            for table in text.tables.values_mut() {
+                for cell in &mut Arc::make_mut(table).cells {
+                    pending.push(&mut cell.text);
+                }
+            }
+        }
+    }
+
+    /// Map an imported series library once for notes and stream routes using the same ids.
+    pub fn adopt_note_series_ids(&mut self, source: &Self) -> std::collections::HashMap<u64, u64> {
         let mut mapped = std::collections::HashMap::new();
         let mut used = std::collections::HashSet::new();
+        // Clipboard snapshots can outlive a deleted equivalent series. Reserve surviving
+        // id-and-definition matches before declaration-order matching can consume them.
+        for series in source.note_series.iter().filter(|s| s.id != 0) {
+            if self.note_series.iter().any(|s| s.id == series.id && s.name == series.name && s.options == series.options) {
+                mapped.insert(series.id, series.id);
+                used.insert(series.id);
+            }
+        }
         // Map the source library in declaration order, so separate copied stories reuse the
         // same counters while distinct source series with matching definitions stay distinct.
         for series in source.note_series.iter().filter(|s| s.id != 0) {
+            if mapped.contains_key(&series.id) {
+                continue;
+            }
             let id = if let Some(existing) =
                 self.note_series.iter().find(|s| !used.contains(&s.id) && s.name == series.name && s.options == series.options)
             {
                 existing.id
             } else {
-                let id = crate::ids::next_local_id(self.note_series.iter().map(|s| s.id));
+                // Do not give a newly adopted definition another source definition's id:
+                // a later adoption would mistake it for a surviving exact match.
+                let id = crate::ids::next_local_id(self.note_series.iter().chain(&source.note_series).map(|s| s.id));
                 self.note_series.push(NoteSeries { id, ..series.clone() });
                 id
             };
             used.insert(id);
             mapped.insert(series.id, id);
         }
-        for note in &mut story.notes {
-            let id = mapped.get(&source.note_series_id(note.series)).copied().unwrap_or(0);
-            if note.series != id {
-                Arc::make_mut(note).series = id;
-            }
-        }
+        mapped
     }
 
     /// Options for a series; unknown ids use the legacy series on imported or pasted text.
@@ -483,6 +540,50 @@ mod tests {
 
     fn st(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    #[test]
+    fn legacy_footnote_options_keep_unsplit_layouts() {
+        let doc = crate::Document::new(&crate::build::NewDocument::default());
+        assert!(doc.footnote_options.allow_split);
+        assert!(FootnoteOptions::default().allow_split);
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy["footnoteOptions"].as_object_mut().unwrap().remove("allowSplit");
+        let loaded: crate::Document = serde_json::from_value(legacy).unwrap();
+        assert!(!loaded.footnote_options.allow_split);
+        for allow in [false, true] {
+            let options = FootnoteOptions { allow_split: allow, ..Default::default() };
+            let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
+            assert_eq!(roundtrip.allow_split, allow);
+        }
+    }
+
+    #[test]
+    fn run_in_roundtrip_and_defaults() {
+        let mut doc = crate::Document::new(&Default::default());
+        doc.footnote_options.run_in = true;
+        doc.footnote_options.run_in_separator = " · ".into();
+        let mut story = st("Main");
+        let id = story.insert_note(0, "Note", Default::default()).unwrap();
+        story.note_mut(id).unwrap().run_in = Some(false);
+        doc.stories.insert(story.id, Arc::new(story));
+        let json = serde_json::to_string(&doc).unwrap();
+        let loaded: crate::Document = serde_json::from_str(&json).unwrap();
+        assert!(loaded.footnote_options.run_in);
+        assert_eq!(loaded.footnote_options.run_in_separator, " · ");
+        assert_eq!(loaded.story(StoryId(1)).unwrap().note(id).unwrap().run_in, Some(false));
+        let old: FootnoteOptions = serde_json::from_str("{}").unwrap();
+        assert!(!old.run_in);
+        assert_eq!(old.run_in_separator, " ");
+    }
+
+    #[test]
+    fn run_in_separator_limit_at_file_boundary() {
+        let mut doc = crate::Document::new(&Default::default());
+        doc.footnote_options.run_in_separator = "א".repeat(65);
+        assert!(doc.check().is_err());
+        doc.footnote_options.run_in_separator = "א".repeat(64);
+        assert!(doc.footnote_options.check().is_ok());
     }
 
     #[test]
@@ -571,6 +672,66 @@ mod series_tests {
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+    #[test]
+    fn adoption_remaps_notes_in_cells_and_nested_note_bodies() {
+        let mut source = crate::Document::new(&Default::default());
+        source.note_series.push(NoteSeries { id: 1, name: "Sources".into(), options: Default::default() });
+        let mut destination = crate::Document::new(&Default::default());
+        destination.note_series.push(NoteSeries { id: 1, name: "Unrelated".into(), options: Default::default() });
+        let mut copied = Story::new(StoryId(0));
+        let outer = copied.insert_note(0, "Outer", Default::default()).unwrap();
+        let body = &mut copied.note_mut(outer).unwrap().text;
+        let nested = body.insert_note(0, "Nested source", Default::default()).unwrap();
+        body.note_mut(nested).unwrap().series = 1;
+        let mut table = crate::Table::new(7, 1, 1, 0, 0, 100.0);
+        let cell = &mut table.cells[0].text;
+        let note = cell.insert_note(0, "Cell source", Default::default()).unwrap();
+        cell.note_mut(note).unwrap().series = 1;
+        let endnote = cell.insert_endnote(cell.len(), "Endnote body", Default::default()).unwrap();
+        let body = &mut cell.endnote_mut(endnote).unwrap().text;
+        let note = body.insert_note(0, "Source inside endnote", Default::default()).unwrap();
+        body.note_mut(note).unwrap().series = 1;
+        copied.insert_table(0, table);
+        destination.adopt_note_series(&mut copied, &source);
+        let cell = &copied.tables[&7].cells[0].text;
+        let mapped = cell.notes[0].series;
+        assert_ne!(mapped, 1, "nested source must not resolve to the unrelated destination series");
+        assert_eq!(copied.notes[0].text.notes[0].series, mapped);
+        assert_eq!(cell.endnotes[0].text.notes[0].series, mapped);
+        assert_eq!(destination.note_series.iter().find(|series| series.id == mapped).unwrap().name, "Sources");
+    }
+
+    #[test]
+    fn repeated_adoption_keeps_conflicting_identical_definitions_mapped_consistently() {
+        let mut source = crate::Document::new(&Default::default());
+        for id in [1, 2] {
+            source.note_series.push(NoteSeries { id, name: "Sources".into(), options: Default::default() });
+        }
+        let mut destination = crate::Document::new(&Default::default());
+        destination.note_series.push(NoteSeries { id: 1, name: "Other".into(), options: Default::default() });
+        let first = destination.adopt_note_series_ids(&source);
+        let again = destination.adopt_note_series_ids(&source);
+        assert_eq!(again, first);
+        assert_ne!(first[&1], first[&2]);
+        assert_eq!(destination.note_series.len(), 3);
+    }
+
+    #[test]
+    fn adoption_preserves_a_surviving_identical_series_after_copy_then_delete() {
+        let mut source = crate::Document::new(&Default::default());
+        for id in [1, 2] {
+            source.note_series.push(NoteSeries { id, name: "Sources".into(), options: Default::default() });
+        }
+        let mut copied = Story::new(StoryId(0));
+        let note = copied.insert_note(0, "Second series", Default::default()).unwrap();
+        copied.note_mut(note).unwrap().series = 2;
+        let mut destination = source.clone();
+        destination.note_series.retain(|series| series.id != 1);
+        destination.adopt_note_series(&mut copied, &source);
+        assert_eq!(copied.notes[0].series, 2, "paste stays in the surviving numbering sequence");
+        assert_eq!(destination.note_series.iter().filter(|series| series.id == 2).count(), 1);
+    }
+
     #[test]
     fn adoption_keeps_identical_source_series_independent() {
         let mut source = crate::Document::new(&Default::default());

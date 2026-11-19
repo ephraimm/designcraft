@@ -8,23 +8,50 @@ use super::{
 use crate::FrameText;
 use designcraft_doc::NotePlacement;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct StreamState {
     series: HashMap<u64, StreamSeriesState>,
 }
 
 impl StreamState {
+    pub(crate) fn progress(&self) -> Vec<(u64, usize, usize, u32, Option<usize>)> {
+        let mut progress: Vec<_> = self
+            .series
+            .iter()
+            .map(|(id, s)| (*id, s.carry.as_ref().map_or(usize::MAX, |c| c.k), if s.carry.is_some() { s.offset } else { 0 }, s.num, s.key))
+            .collect();
+        progress.sort_unstable();
+        progress
+    }
+    pub(crate) fn pending_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.series.values().filter_map(|s| s.carry.as_ref().map(|c| c.k))
+    }
+    pub(crate) fn progress_from(&self, before: &Self) -> bool {
+        before.series.iter().any(|(id, old)| {
+            old.carry.is_some()
+                && self.series.get(id).is_some_and(|new| {
+                    new.carry.is_none() || new.carry.as_ref().map(|c| c.k) != old.carry.as_ref().map(|c| c.k) || new.offset > old.offset
+                })
+        })
+    }
+    pub(crate) fn take_series(&mut self, other: &Self, id: u64) {
+        if let Some(state) = other.series.get(&id) {
+            self.series.insert(id, state.clone());
+        }
+    }
+
     pub fn pending_series(&self) -> impl Iterator<Item = u64> + '_ {
         self.series.iter().filter_map(|(id, s)| s.carry.is_some().then_some(*id))
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct StreamSeriesState {
     num: u32,
     key: Option<usize>,
     carry: Option<Carry>,
     carry_number: u32,
+    offset: usize,
 }
 
 fn respects_keeps(plan: &super::SplitPlan) -> bool {
@@ -59,6 +86,17 @@ pub struct StreamPageFit {
 /// leave `before` untouched. Earlier part dimensions are replayed through the original split
 /// composer, which retains source byte ranges and the note paragraphs' keep constraints.
 pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>, before: &StreamState, opts: &ComposeOptions) -> StreamPageFit {
+    fit_stream_page_for(doc, story, input, before, opts, None)
+}
+
+pub(crate) fn fit_stream_page_for(
+    doc: &Document,
+    story: &Story,
+    input: StreamPageInput<'_>,
+    before: &StreamState,
+    opts: &ComposeOptions,
+    only: Option<u64>,
+) -> StreamPageFit {
     let mut result = StreamPageFit {
         state: before.clone(),
         frames: input.areas.iter().map(|f| FrameText { frame: f.id, columns: f.columns(), ..Default::default() }).collect(),
@@ -72,7 +110,7 @@ pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>
         .chain(input.areas)
         .filter_map(|f| f.opts.note_stream.map(|s| s.series))
         .chain(before.series.keys().copied())
-        .filter(|id| matches!(doc.note_options(*id).placement, NotePlacement::Stream))
+        .filter(|id| only.is_none_or(|wanted| *id == wanted) && matches!(doc.note_options(*id).placement, NotePlacement::Stream))
         .collect();
     ids.sort_unstable();
     ids.dedup();
@@ -95,19 +133,27 @@ pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>
         }
         notes.number_refs(doc, input.main.clone(), Some(input.page), &mut SubstCtx::default());
         let anchors: Vec<_> = notes.refs.iter().enumerate().filter_map(|(k, at)| (notes.owns(k) && input.main.contains(at)).then_some(k)).collect();
+        if opts.note_bands {
+            notes.band_incoming = notes.carry.as_ref().map(|c| (c.k, c.heights.len()));
+        }
         let had_carry = notes.carry.is_some();
         let mut next = 0;
         for (fi, frame) in input.areas.iter().enumerate().filter(|(_, f)| f.opts.note_stream.is_some_and(|s| s.series == series)) {
             for (ci, area) in frame.columns().iter().enumerate() {
                 let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
+                if opts.note_bands {
+                    notes.band_previous = placed_parts(doc, story, &notes, input.areas, true)
+                        .last()
+                        .and_then(|(_, part)| part.text.frames.first().and_then(|f| f.lines.last()).map(|l| part.origin.y + l.baseline));
+                }
+                notes.band_span = opts.note_bands.then_some(area.height());
+                notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
                 let room = area.height();
                 if notes.carry.is_some() {
+                    let available = room - notes.area_space(doc, column, &[], opts);
                     if notes.reserve(doc, column, &[], opts) <= room + 0.01 {
                         notes.place_line(doc, column, &[], None, opts);
-                    } else if allow_split
-                        && let Some(plan) =
-                            notes.split_plan(doc, column, &[], room - doc.note_options(series).space_before, opts).filter(respects_keeps)
-                    {
+                    } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[], available, opts).filter(respects_keeps) {
                         notes.place_line(doc, column, &[], Some(plan), opts);
                     }
                     if notes.carry.is_some() {
@@ -115,12 +161,10 @@ pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>
                     }
                 }
                 while let Some(&k) = anchors.get(next) {
+                    let available = room - notes.area_space(doc, column, &[k], opts);
                     if notes.reserve(doc, column, &[k], opts) <= room + 0.01 {
                         notes.place_line(doc, column, &[k], None, opts);
-                    } else if allow_split
-                        && let Some(plan) =
-                            notes.split_plan(doc, column, &[k], room - doc.note_options(series).space_before, opts).filter(respects_keeps)
-                    {
+                    } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[k], available, opts).filter(respects_keeps) {
                         notes.place_line(doc, column, &[k], Some(plan), opts);
                     } else if !had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.as_ref().is_some_and(|range| range.contains(at))) {
                         notes.place(doc, k, column, opts);
@@ -150,41 +194,73 @@ pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>
             };
         }
         let carry_number = notes.carry.as_ref().and_then(|c| notes.numbers.get(c.k)).copied().unwrap_or(0);
-        result.state.series.insert(series, StreamSeriesState { num: notes.num, key: notes.key, carry: notes.carry.clone(), carry_number });
-        let o = doc.note_options(series);
-        for (fi, frame) in input.areas.iter().enumerate() {
-            for (ci, area) in frame.columns().iter().enumerate() {
-                let mut previous: Option<(f64, f64)> = None;
-                for part in notes.placed.iter().filter(|p| p.fi == fi.saturating_add(1) && p.col == ci) {
-                    let super::NoteSource::Story(k) = part.source else { continue };
-                    let note = &part.note;
-                    let y = previous.map_or(area.y0 + o.space_before, |(baseline, _)| baseline + o.space_between + part.m.lead - part.m.first);
-                    let bottom = y + part.m.last + part.m.descent;
-                    let overflow = bottom > area.y1 + 0.01;
-                    let top = previous.map_or(y, |(_, bottom)| bottom + o.space_between);
-                    if let Some(ft) = result.frames.get_mut(fi) {
-                        ft.notes.push(PlacedNote {
-                            id: note.id,
-                            index: k,
-                            series,
-                            reference_baseline: 0.0,
-                            overflow,
-                            column: ci as u32,
-                            label: part.label.clone(),
-                            origin: Point::new(area.x0, y),
-                            rect: Rect::new(area.x0, top, area.x1, bottom),
-                            text: part.text.clone(),
-                            source: Arc::from(note.text.text.as_str()),
-                            note: Arc::clone(note),
-                        });
-                        ft.content_height = ft.content_height.max(bottom - frame.area.y0);
-                    }
-                    previous = Some((y + part.m.last, bottom));
-                }
+        let offset = notes
+            .placed
+            .last()
+            .and_then(|p| p.text.frames.last())
+            .map(|f| f.range.end)
+            .or_else(|| before.series.get(&series).map(|s| s.offset))
+            .unwrap_or(0);
+        result.state.series.insert(series, StreamSeriesState { offset, num: notes.num, key: notes.key, carry: notes.carry.clone(), carry_number });
+        for (fi, part) in placed_parts(doc, story, &notes, input.areas, opts.note_bands) {
+            if let Some(frame) = result.frames.get_mut(fi) {
+                frame.content_height = frame.content_height.max(part.rect.y1 - input.areas.get(fi).map_or(0.0, |f| f.area.y0));
+                super::append_note(&mut frame.notes, part);
             }
         }
     }
     result
+}
+
+fn placed_parts(doc: &Document, _story: &Story, notes: &SeriesNotes, areas: &[FrameSpec], bands: bool) -> Vec<(usize, PlacedNote)> {
+    let o = doc.note_options(notes.series);
+    let mut out = Vec::new();
+    let mut previous: Option<(f64, f64, super::NoteMetrics)> = None;
+    for (fi, frame) in areas.iter().enumerate() {
+        for (ci, area) in frame.columns().iter().enumerate() {
+            if !bands {
+                previous = None;
+            }
+            let mut first = true;
+            for part in notes.placed.iter().filter(|p| p.fi == fi.saturating_add(1) && p.col == ci) {
+                let super::NoteSource::Story(k) = part.source else { continue };
+                let note = &part.note;
+                let y = if bands && first && part.part > 0 && previous.is_some() {
+                    area.y0
+                } else {
+                    previous.map_or(area.y0 + o.space_before + part.m.top_padding(), |(baseline, _, metrics)| {
+                        baseline + o.space_between + metrics.advance_to(part.m) - part.m.first
+                    })
+                };
+                let bottom = y + part.m.last + part.m.descent;
+                let top = if first {
+                    y
+                } else {
+                    previous.map_or(y, |(_, bottom, _)| if part.m.lead <= 0.0 { y + part.m.first - part.m.ascent } else { bottom + o.space_between })
+                };
+                out.push((
+                    fi,
+                    PlacedNote {
+                        id: note.id,
+                        index: k,
+                        series: notes.series,
+                        reference_baseline: 0.0,
+                        overflow: bottom > area.y1 + 0.01,
+                        column: ci as u32,
+                        label: part.label.clone(),
+                        origin: Point::new(area.x0, y),
+                        rect: Rect::new(area.x0, top, area.x1, bottom),
+                        text: part.text.clone(),
+                        source: Arc::from(note.text.text.as_str()),
+                        note: Arc::clone(note),
+                    },
+                ));
+                previous = Some((y + part.m.last, bottom, part.m));
+                first = false;
+            }
+        }
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -201,6 +277,7 @@ pub(super) struct StreamComposer {
     routes: Vec<FrameSpec>,
     host_pages: Vec<Option<usize>>,
     refs: Vec<usize>,
+    inset_series: Vec<u64>,
     anchors: Vec<Anchors>,
     pending: Option<Anchors>,
 }
@@ -209,6 +286,11 @@ impl StreamComposer {
     pub(super) fn new(doc: &Document, story: &Story, frames: &[FrameSpec]) -> Self {
         let routes = if frames.iter().any(|f| f.page_rect.is_some()) { crate::stream_frame_specs(doc, story.id) } else { Vec::new() };
         Self {
+            inset_series: frames
+                .iter()
+                .filter_map(|f| f.opts.inset_columns.as_ref())
+                .flat_map(|c| c.streams.iter().filter_map(|s| s.series))
+                .collect(),
             host: story.id,
             routes,
             host_pages: frames.iter().map(|f| f.page).collect(),
@@ -219,7 +301,7 @@ impl StreamComposer {
     }
 
     pub(super) fn has_route(&self, series: u64) -> bool {
-        self.routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == series))
+        self.inset_series.contains(&series) || self.routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == series))
     }
 
     pub(super) fn snapshot(&self) -> usize {
@@ -268,7 +350,17 @@ impl StreamComposer {
         anchors.push(Anchors { page, range, forced: false });
         let Some(fit) = self.replay(doc, &anchors, Some(page), opts).pop() else { return true };
         let has_main = out.frames.iter().zip(&self.host_pages).any(|(frame, p)| *p == Some(page) && !frame.lines.is_empty());
-        let can_force = !has_main && !fit.had_continuation;
+        // Missing routes can be reached on a later page; forcing is only for an existing
+        // empty area that cannot fit its first comment.
+        let routes_present = extra
+            .iter()
+            .filter_map(|k| story.notes.get(*k))
+            .filter(|note| matches!(doc.note_options(note.series).placement, NotePlacement::Stream))
+            .all(|note| {
+                let series = doc.note_series_id(note.series);
+                !self.has_route(series) || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.is_some_and(|s| s.series == series))
+            });
+        let can_force = !has_main && !fit.had_continuation && routes_present;
         if !fit.starts_fit && !can_force {
             return false;
         }

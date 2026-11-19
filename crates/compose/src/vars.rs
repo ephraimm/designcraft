@@ -38,6 +38,7 @@ pub fn page_of(doc: &Document, cs: &ComposedStory, pos: usize) -> Option<usize> 
 pub struct RunningIndex {
     map: HashMap<(String, bool), BTreeMap<usize, (String, String)>>,
     catchwords: HashMap<(StoryId, usize), String>,
+    series_catchwords: HashMap<(StoryId, u64, usize), String>,
     default_catchwords: HashMap<usize, (usize, StoryId, String)>,
 }
 
@@ -57,10 +58,10 @@ pub(crate) fn place(doc: &Document, cs: &ComposedStory, pos: usize) -> Option<(u
 }
 
 /// Absolute document page of a frame; parent-page frames have no document page.
-fn frame_page(doc: &Document, frame_item: ItemId) -> Option<usize> {
+pub(crate) fn frame_page(doc: &Document, frame_item: ItemId) -> Option<usize> {
     let loc = doc.find(frame_item)?;
     let SpreadRef::Doc(si) = loc.spread else { return None };
-    let b = doc.item(frame_item)?.bounds();
+    let b = doc.parent_xf(&loc).transform_rect_bbox(doc.item(frame_item)?.bounds());
     let pi = doc.spreads.get(si)?.page_at_x(b.center().x).unwrap_or(0);
     doc.first_page_of_spread(si).checked_add(pi)
 }
@@ -77,6 +78,102 @@ fn first_word(text: &str) -> Option<(usize, String)> {
     let word: String = chars.take_while(|(_, c)| !c.is_whitespace()).map(|(_, c)| c).collect();
     let word = word.trim_end_matches([',', '.', ';', ':', '!', '?', ')', ']', '"', '\'', '”', '’', '»', '׃', '׀']);
     (!word.is_empty()).then(|| (start, word.to_string()))
+}
+
+/// Reconstruct source text represented by visible glyphs, in source order. Hidden placeholders
+/// keep byte ranges for editing but must not supply catchwords. Undrawn trimmed spaces and
+/// actual line-break controls still delimit words; generated labels have no source length.
+fn visible_source<'a>(source: &str, glyphs: impl Iterator<Item = &'a crate::PlacedGlyph>) -> String {
+    let mut spans = BTreeMap::new();
+    for g in glyphs.filter(|g| g.len > 0) {
+        let shown = g.visible || g.adv > 0.0 || crate::breaker::is_forced(g.rendered_char) || g.rendered_char == '\t';
+        spans
+            .entry(g.byte)
+            .and_modify(|v: &mut (usize, bool)| {
+                v.0 = v.0.max(g.len);
+                v.1 |= shown;
+            })
+            .or_insert((g.len, shown));
+    }
+    let mut text = String::new();
+    let mut end = None;
+    for (start, (len, shown)) in spans {
+        if let Some(before) = end {
+            if start < before {
+                continue;
+            }
+            if source.get(before..start).is_some_and(|s| s.contains('\n')) {
+                text.push('\n');
+            }
+        }
+        let next = start.saturating_add(len);
+        if shown && let Some(part) = source.get(start..next) {
+            text.push_str(part);
+        }
+        end = Some(next);
+    }
+    text
+}
+
+/// First visible word on the next page showing this series. Source ranges, rather than
+/// generated labels, distinguish a continued note from the next note in the same stream.
+pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64) -> BTreeMap<usize, String> {
+    let mut pages: BTreeMap<usize, Vec<_>> = BTreeMap::new();
+    for frame in &cs.frames {
+        let Some(page) = frame_page(doc, frame.frame) else { continue };
+        for note in frame.notes.iter().filter(|n| n.series == series) {
+            for part in &note.text.frames {
+                let glyphs = || part.lines.iter().flat_map(|l| &l.glyphs);
+                let Some(start) = glyphs().filter(|g| g.visible && g.len > 0).map(|g| g.byte).min() else { continue };
+                pages.entry(page).or_default().push((note.index, start, visible_source(&note.source, glyphs())));
+            }
+        }
+    }
+    for parts in pages.values_mut() {
+        parts.sort_by_key(|(index, start, _)| (*index, *start));
+    }
+    let mut out = BTreeMap::new();
+    for page in pages.keys() {
+        let word = pages
+            .range(page.saturating_add(1)..)
+            .next()
+            .and_then(|(_, parts)| parts.iter().find_map(|(_, _, text)| first_word(text).map(|(_, word)| word)));
+        out.insert(*page, word.unwrap_or_default());
+    }
+    out
+}
+
+/// Catchwords for the main source, with its shown-byte count for default-source selection.
+pub(crate) fn story_catchwords(doc: &Document, cs: &ComposedStory, st: &Story) -> BTreeMap<usize, (usize, String)> {
+    // Routed note frames are appended to the composition but never carry main-story bytes.
+    let main =
+        |ft: &&crate::FrameText| doc.item(ft.frame).and_then(|i| i.text_frame()).is_some_and(|f| f.story == st.id && f.options.note_stream.is_none());
+    let mut pages: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    for ft in cs.frames.iter().filter(main) {
+        if let Some(page) = frame_page(doc, ft.frame) {
+            let shown = pages.entry(page).or_default();
+            shown.0 = shown.0.saturating_add(ft.range.len());
+            shown.1 = shown.1.max(ft.range.end);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (page, (shown, end)) in pages {
+        let word = if end >= st.text.len() || cs.overset_at.is_some_and(|o| end >= o) {
+            String::new()
+        } else {
+            let glyphs = cs
+                .frames
+                .iter()
+                .filter(main)
+                .filter(|ft| frame_page(doc, ft.frame).is_some_and(|p| p > page))
+                .flat_map(|ft| &ft.lines)
+                .flat_map(|l| &l.glyphs)
+                .filter(|g| g.byte >= end && cs.overset_at.is_none_or(|o| g.byte < o));
+            first_word(&visible_source(&st.text, glyphs)).map(|(_, word)| word).unwrap_or_default()
+        };
+        out.insert(page, (shown, word));
+    }
+    out
 }
 
 /// A paragraph or run a running header may show: where it starts ([`place`]), its story and byte
@@ -106,8 +203,9 @@ fn in_page_order(hits: Vec<Hit>) -> Vec<(usize, String)> {
 }
 
 impl RunningIndex {
-    /// Index running-header paragraphs / runs and catchwords. `get` composes a story (normally
-    /// through the cache); stories containing either indexed variable kind are skipped to avoid cycles.
+    /// Index running-header paragraphs / runs and catchwords from body layouts without
+    /// resolving document-wide indexes, including indirect margin dependencies. Stories
+    /// containing either indexed variable kind are skipped to avoid cycles.
     pub fn build(doc: &Document, get: &dyn Fn(StoryId) -> Arc<ComposedStory>) -> RunningIndex {
         let wanted: Vec<(String, bool)> = doc
             .text_variables
@@ -121,7 +219,7 @@ impl RunningIndex {
             .text_variables
             .iter()
             .filter_map(|v| match v.kind {
-                VarKind::NextPageFirstWord { story } => Some(story),
+                VarKind::NextPageFirstWord { story, series } => Some((story, series)),
                 _ => None,
             })
             .collect();
@@ -137,35 +235,16 @@ impl RunningIndex {
             }
             let para_hit = st.paras.iter().any(|f| wanted.iter().any(|(s, c)| !c && *s == f.style));
             let char_hit = wanted.iter().any(|(_, c)| *c) && st.runs().any(|(_, f)| wanted.iter().any(|(s, c)| *c && *s == f.style));
-            let catchword_hit = catchword_stories.iter().any(|story| story.is_none_or(|id| id == *sid));
+            let catchword_hit = catchword_stories.iter().any(|(story, _)| story.is_none_or(|id| id == *sid));
             if !para_hit && !char_hit && !catchword_hit {
                 continue;
             }
             let cs = get(*sid);
-            if catchword_hit {
-                let mut pages: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-                for ft in &cs.frames {
-                    if let Some(page) = frame_page(doc, ft.frame) {
-                        let shown = pages.entry(page).or_default();
-                        shown.0 = shown.0.saturating_add(ft.range.len());
-                        shown.1 = shown.1.max(ft.range.end);
-                    }
-                }
-                for (page, (shown, end)) in pages {
-                    let word = if end >= st.text.len() || cs.overset_at.is_some_and(|o| end >= o) {
-                        String::new()
-                    } else {
-                        st.text
-                            .get(end..)
-                            .and_then(first_word)
-                            .filter(|(offset, _)| {
-                                let Some(start) = end.checked_add(*offset) else { return false };
-                                cs.overset_at.is_none_or(|o| start < o)
-                                    && cs.frames.iter().any(|ft| ft.range.contains(&start) && frame_page(doc, ft.frame).is_some_and(|p| p != page))
-                            })
-                            .map(|(_, word)| word)
-                            .unwrap_or_default()
-                    };
+            for series in catchword_stories.iter().filter_map(|(story, series)| (story == &Some(*sid)).then_some(*series).flatten()) {
+                index.series_catchwords.extend(series_catchwords(doc, &cs, series).into_iter().map(|(page, word)| ((*sid, series, page), word)));
+            }
+            if catchword_stories.iter().any(|(story, series)| series.is_none() && story.is_none_or(|id| id == *sid)) {
+                for (page, (shown, word)) in story_catchwords(doc, &cs, st) {
                     index.catchwords.insert((*sid, page), word.clone());
                     let default = index.default_catchwords.entry(page).or_insert((shown, *sid, word.clone()));
                     if shown > default.0 || (shown == default.0 && *sid < default.1) {
@@ -255,8 +334,11 @@ pub fn values_shown(doc: &Document, page: Option<usize>, parent: bool, running: 
                 };
                 format!("{}{}{}", v.before, body, v.after)
             }
-            VarKind::NextPageFirstWord { story } => {
+            VarKind::NextPageFirstWord { story, series } => {
                 let word = match (running, page) {
+                    (Some(r), Some(p)) if series.is_some() => {
+                        story.zip(*series).and_then(|(sid, series)| r.series_catchwords.get(&(sid, series, p))).cloned().unwrap_or_default()
+                    }
                     (Some(r), Some(p)) => r.catchword(*story, p),
                     _ => String::new(),
                 };

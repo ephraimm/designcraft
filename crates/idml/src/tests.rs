@@ -5562,44 +5562,6 @@ fn footnote_no_splitting_import() {
 }
 
 #[test]
-fn hebrew_section_and_footnote_idml_round_trip() {
-    use designcraft_doc::NumberStyle;
-    for style in [NumberStyle::Hebrew, NumberStyle::HebrewPlain] {
-        let mut d = Document::new(&NewDocument::default());
-        d.sections[0].style = style;
-        d.footnote_options.style = style;
-        let bytes = export_idml(&d);
-        let map = zip_text(&bytes, "designmap.xml");
-        assert!(map.contains("<PageNumberStyle type=\"enumeration\">HebrewBiblical</PageNumberStyle>"), "{map}");
-        let prefs = zip_text(&bytes, "Resources/Preferences.xml");
-        assert!(prefs.contains("HebrewBiblical"), "{prefs}");
-        let back = import_idml(&bytes).unwrap();
-        assert_eq!(back.sections[0].style, NumberStyle::Hebrew);
-        assert_eq!(back.footnote_options.style, NumberStyle::Hebrew);
-        assert_eq!(back.page_name(0), "א׳");
-    }
-    assert_eq!(names::number_style_in("HebrewNonStandard"), NumberStyle::Arabic);
-}
-
-#[test]
-fn hebrew_list_idml_warns_once_and_writes_arabic() {
-    use designcraft_doc::{ListType, NumberStyle};
-    let mut d = Document::new(&NewDocument::default());
-    let layer = d.default_layer();
-    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), layer, "First\nSecond", ParaFormat::default()).unwrap();
-    let story = d.story_mut(sid).unwrap();
-    for (para, style) in story.paras.iter_mut().zip([NumberStyle::Hebrew, NumberStyle::HebrewPlain]) {
-        para.para.list_type = Some(ListType::Numbers);
-        para.para.number_style = Some(style);
-    }
-    let (bytes, warnings) = export_idml_report(&d, &ExportOptions::default());
-    let xml = zip_text(&bytes, "Stories/");
-    assert_eq!(xml.matches("<NumberingFormat type=\"string\">1, 2, 3, 4...</NumberingFormat>").count(), 2, "{xml}");
-    let warning = "Hebrew list numbering is written as Arabic numerals (1, 2, 3, 4...): IDML has no documented Hebrew list numbering format.";
-    assert_eq!(warnings.iter().filter(|w| w.as_str() == warning).count(), 1, "{warnings:?}");
-}
-
-#[test]
 fn idml_note_series_export_keeps_all_notes_and_warns() {
     use designcraft_doc::{FootnoteOptions, NoteSeries};
     let mut d = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
@@ -5641,4 +5603,134 @@ fn idml_warns_before_flattening_streams_and_hidden_references_even_in_series_zer
     assert!(warnings.iter().any(|w| w.contains("commentary stream routes or hidden note references")));
     let reopened = import_idml(&bytes).unwrap();
     assert!(reopened.stories.values().flat_map(|s| &s.notes).any(|note| note.text.text == "Commentary"));
+}
+
+#[test]
+fn idml_warns_before_dropping_inset_geometry() {
+    use designcraft_doc::{Document, InsetColumns, InsetStream, SpreadRef, build::NewDocument, geom::Rect};
+    let mut doc = Document::new(&NewDocument::default());
+    let (id, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 700.0), doc.default_layer(), "Main", Default::default()).unwrap();
+    doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns = Some(InsetColumns {
+        streams: vec![InsetStream { series: None, ratio: 1.0 }],
+        gutter: 12.0,
+        main_start_lines: 0,
+        main_start_baseline: None,
+        main_left_inset: None,
+        main_right_inset: None,
+        catchwords: false,
+    });
+    let (_, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("inset-column geometry")));
+}
+
+#[test]
+fn idml_warns_for_additional_note_series_inside_a_table_cell() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
+    d.note_series.push(designcraft_doc::NoteSeries { id: 1, name: "Sources".into(), options: Default::default() });
+    let tid = d.alloc();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(0, designcraft_doc::Table::new(tid, 1, 1, 0, 0, 240.0));
+    let table = std::sync::Arc::make_mut(st.tables.get_mut(&tid).unwrap());
+    let text = &mut table.cells[0].text;
+    let id = text.insert_note(0, "Embedded source", Default::default()).unwrap();
+    text.note_mut(id).unwrap().series = 1;
+    let (bytes, warnings) = crate::export_idml_report(&d, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("one footnote setup")), "{warnings:?}");
+    let back = import_idml(&bytes).unwrap();
+    let note = back.stories.values().flat_map(|s| s.tables.values()).flat_map(|t| &t.cells).flat_map(|c| &c.text.notes).next().unwrap();
+    assert_eq!(note.series, 0);
+    assert_eq!(note.text.text, "Embedded source");
+}
+
+#[test]
+fn idml_warns_when_visible_series_zero_margin_notes_become_ordinary_footnotes() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(0, "Margin source", Default::default());
+    let (bytes, warnings) = crate::export_idml_report(&d, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("margin") && w.contains("ordinary footnotes")), "{warnings:?}");
+    let back = import_idml(&bytes).unwrap();
+    assert!(back.footnote_options.placement.is_column_foot());
+    assert!(back.stories.values().flat_map(|s| &s.notes).any(|n| n.text.text == "Margin source"));
+}
+
+#[test]
+fn idml_warns_for_hidden_references_inside_cells_and_note_bodies() {
+    for nested in [false, true] {
+        let mut d = Document::new(&NewDocument::default());
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
+        d.note_series.push(designcraft_doc::NoteSeries {
+            id: 1,
+            name: "Hidden".into(),
+            options: designcraft_doc::FootnoteOptions { ref_hidden: true, ..Default::default() },
+        });
+        let tid = d.alloc();
+        let st = d.story_mut(sid).unwrap();
+        let text = if nested {
+            let id = st.insert_note(0, "Outer", Default::default()).unwrap();
+            &mut st.note_mut(id).unwrap().text
+        } else {
+            st.insert_table(0, designcraft_doc::Table::new(tid, 1, 1, 0, 0, 240.0));
+            &mut std::sync::Arc::make_mut(st.tables.get_mut(&tid).unwrap()).cells[0].text
+        };
+        let id = text.insert_note(0, "Hidden embedded source", Default::default()).unwrap();
+        text.note_mut(id).unwrap().series = 1;
+        let (_, warnings) = crate::export_idml_report(&d, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("hidden note references")), "nested={nested}: {warnings:?}");
+    }
+}
+
+#[test]
+fn idml_warns_before_restoring_hidden_body_labels() {
+    let mut doc = Document::new(&NewDocument::default());
+    let (_, host) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 400.0), doc.default_layer(), "Body", Default::default()).unwrap();
+    doc.story_mut(host).unwrap().insert_note(4, "Source", Default::default()).unwrap();
+    doc.footnote_options.body_hidden = true;
+    let (bytes, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("hidden note body labels")), "{warnings:?}");
+    let back = import_idml(&bytes).unwrap();
+    assert!(back.stories.values().flat_map(|s| &s.notes).any(|n| n.text.text == "Source"));
+}
+
+#[test]
+fn hebrew_section_and_footnote_idml_round_trip() {
+    use designcraft_doc::NumberStyle;
+    for style in [NumberStyle::Hebrew, NumberStyle::HebrewPlain] {
+        let mut d = Document::new(&NewDocument::default());
+        d.sections[0].style = style;
+        d.footnote_options.style = style;
+        let bytes = export_idml(&d);
+        let map = zip_text(&bytes, "designmap.xml");
+        assert!(map.contains("<PageNumberStyle type=\"enumeration\">HebrewBiblical</PageNumberStyle>"), "{map}");
+        let prefs = zip_text(&bytes, "Resources/Preferences.xml");
+        assert!(prefs.contains("HebrewBiblical"), "{prefs}");
+        let back = import_idml(&bytes).unwrap();
+        assert_eq!(back.sections[0].style, NumberStyle::Hebrew);
+        assert_eq!(back.footnote_options.style, NumberStyle::Hebrew);
+        assert_eq!(back.page_name(0), "א׳");
+    }
+    assert_eq!(names::number_style_in("HebrewNonStandard"), NumberStyle::Arabic);
+}
+
+#[test]
+fn hebrew_list_idml_warns_once_and_writes_arabic() {
+    use designcraft_doc::{ListType, NumberStyle};
+    let mut d = Document::new(&NewDocument::default());
+    let layer = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), layer, "First\nSecond", ParaFormat::default()).unwrap();
+    let story = d.story_mut(sid).unwrap();
+    for (para, style) in story.paras.iter_mut().zip([NumberStyle::Hebrew, NumberStyle::HebrewPlain]) {
+        para.para.list_type = Some(ListType::Numbers);
+        para.para.number_style = Some(style);
+    }
+    let (bytes, warnings) = export_idml_report(&d, &ExportOptions::default());
+    let xml = zip_text(&bytes, "Stories/");
+    assert_eq!(xml.matches("<NumberingFormat type=\"string\">1, 2, 3, 4...</NumberingFormat>").count(), 2, "{xml}");
+    let warning = "Hebrew list numbering is written as Arabic numerals (1, 2, 3, 4...): IDML has no documented Hebrew list numbering format.";
+    assert_eq!(warnings.iter().filter(|w| w.as_str() == warning).count(), 1, "{warnings:?}");
 }

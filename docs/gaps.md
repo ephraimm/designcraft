@@ -18,7 +18,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ## Alpha blocker (the core-workflow gate in [roadmap.md](roadmap.md#alpha-gate))
 
-Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side, and report overflow. Native files retain the series; IDML writes all notes using its one footnote setup with a warning. Anchored commentary streams (#2872) fit first parts on their anchor pages, route continuations independently of the body thread, and report stream overflow separately from body overset. Inset-column geometry and stream catchwords remain #2873.
+Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references, stack by page side across ordinary and anchored hosts, and report overflow. Stacking uses the displayed cross-reference and running-header context. Running-header source pages use resolved references. Option changes invalidate table-cell note layouts. Hidden containers release their stack space. Indexed wrap neighbours retain placements from stacked margin notes and displayed running-header/xref text, and follow host, stack or text-source edits. PDF exports retain notes outside the host frame's page. Native files retain the series; deletion resets embedded memberships before ID reuse. Pending continuations advance using their own series options before a later reference moves on. IDML writes all notes using its one footnote setup with a warning for additional series or margin placement, including notes in table cells. Anchored commentary streams (#2872) fit first parts on their anchor pages, route continuations independently of the body thread, and report stream overflow separately from body overset. Inset columns and optional per-stream catchwords now share dynamic regions (#2873). Continued-note parts replay their original page context; page-number markers within a paragraph spanning pages still use the paragraph-start page (#2886).
 
 ### 0. Primary Text Frame autoflow adds pages users can't delete (F) · **ALPHA BLOCKER**
 - **Missing:** fixes to Smart Text Reflow on the Primary Text Frame, which users report adding
@@ -72,7 +72,7 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 4. Composition isn't compared with InDesign (T)
-- **Inset columns:** the pure multi-stream band rule is implemented (#2873), with stable outside columns and facing-page mirroring. Frame fitting, incremental re-fit and per-stream catchwords remain open; see [inset-columns.md](inset-columns.md).
+- **Inset columns:** the multi-stream band rule, positioned/mirrored frame option, whole-line page fitting and incremental re-fit are implemented (#2873). Standalone commentary routes beside inset frames retain their text and report overset. Optional per-stream catchwords follow the last rectangle; see [inset-columns.md](inset-columns.md).
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
   frame fit. Known differences: optical kerning is an outline-based approximation, not Adobe's
@@ -300,11 +300,6 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 ### 25. Accessibility of the app itself (U)
 - **Missing:** screen-reader exposure of panels and dialogs (egui AccessKit coverage unverified);
   PDF/UA validation of exports. **Estimate:** 15–25 h.
-
-### 29. Document tabs can't be reordered (U)
-- **Missing:** dragging a document tab to reorder it, and dragging it out into its own window. Tabs scroll,
-  list every document and keep the active one in view when they overflow.
-- **Estimate:** 3–5 h.
 
 ## Out of scope (by design)
 

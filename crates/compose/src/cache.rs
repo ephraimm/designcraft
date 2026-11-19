@@ -57,7 +57,7 @@ type Resolved = HashMap<(StoryId, bool, usize), Arc<ComposedStory>>;
 /// must keep normal neighbour wraps. Placements are part of a story's signature, so compositions
 /// made during a build are recomposed with full placements later.
 fn indexed(doc: &Document, sid: StoryId) -> bool {
-    doc.stories.get(&sid).is_some_and(|st| crate::xref::has_xrefs(st) || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st)))
+    doc.stories.get(&sid).is_some_and(|st| indexed_neighbour(doc, st))
 }
 
 thread_local! {
@@ -141,15 +141,60 @@ fn doc_signature(doc: &Document) -> u64 {
     }
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
-    sections_hash(doc).hash(&mut h);
-    for c in &doc.conditions {
-        (&c.name, c.visible).hash(&mut h);
+    // Visibility can change displayed words and anchor pages without editing a story.
+    for condition in &doc.conditions {
+        (&condition.name, condition.visible).hash(&mut h);
     }
+    format!("{:?}{:?}", doc.footnote_options, doc.note_series).hash(&mut h);
+    format!("{:?}", doc.xref_formats).hash(&mut h);
+    sections_hash(doc).hash(&mut h);
     // The compositions the indexes are built from also depend on these (see `signature`).
     let g = &doc.settings.baseline_grid;
     (doc.font_scope, g.relative_to == designcraft_doc::GridRelative::TopMargin, g.start.to_bits(), g.increment.to_bits()).hash(&mut h);
     outlines_hash(doc).hash(&mut h);
     h.finish()
+}
+
+/// Margin collisions depend on the displayed cross-reference baselines of neighbouring stories.
+fn margin_needs_xrefs(doc: &Document, story: &Story) -> bool {
+    story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. }))
+        && doc.stories.values().any(|st| crate::xref::has_xrefs(st))
+}
+
+/// A plain margin host still stacks against neighbours with running-header variables.
+fn margin_needs_running(doc: &Document, story: &Story) -> bool {
+    story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. }))
+        && doc.stories.values().any(|st| crate::vars::has_running(doc, st))
+}
+
+fn indexed_neighbour(doc: &Document, story: &Story) -> bool {
+    crate::xref::has_xrefs(story)
+        || (crate::vars::has_vars(story) && crate::vars::has_running(doc, story))
+        || margin_needs_xrefs(doc, story)
+        || margin_needs_running(doc, story)
+}
+
+fn neighbour_placements(doc: &Document, sid: StoryId, depth: usize, context: &ComposeOptions) -> Vec<(designcraft_doc::ItemId, crate::Placement)> {
+    if depth >= crate::placed::MAX_DEPTH {
+        return Vec::new();
+    }
+    // Margin stacking can move frames inside notes. Uncached host composition keeps that
+    // displacement without re-entering the cache or requesting another index.
+    crate::placed::placements(doc, sid, &mut |host| Arc::new(crate::compose_story(doc, host, context)))
+}
+
+fn neighbour_placement_signature(doc: &Document, sid: StoryId, story: &Story, depth: usize, context: &ComposeOptions) -> Option<usize> {
+    if !indexed_neighbour(doc, story) {
+        return None;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // A host edit can move an anchored neighbour without editing that neighbour.
+    for (id, p) in neighbour_placements(doc, sid, depth, context) {
+        (id, p.spread, p.xf.as_coeffs().map(f64::to_bits)).hash(&mut h);
+        format!("{:?}", doc.spread(p.spread).map(|sp| &sp.pages)).hash(&mut h);
+    }
+    Some(h.finish() as usize)
 }
 
 /// The Alpha Channel outlines text wraps around: a relink traces a new one while the items and
@@ -238,6 +283,8 @@ impl Cache {
         let (mut sig, mut keep_items) = signature(doc, story);
         let neighbours = if cross { crate::wrap::neighbours(doc, sid) } else { Vec::new() };
         let mut keep_stories = Vec::new();
+        let neighbour_context = self.neighbour_context(doc, &neighbours);
+        sig.extend((neighbour_context.running.is_some() || neighbour_context.xrefs.is_some()).then(|| doc_signature(doc) as usize));
         // A neighbour's signature goes in as its hash, and its items only once each: stories on
         // one spread share its wrapping items, so copying every neighbour's whole signature and
         // items made each entry as large as all of theirs together.
@@ -247,6 +294,7 @@ impl Cache {
                 let (s, k) = signature(doc, ns);
                 sig.push(usize::MAX - 1);
                 sig.push(hash_of(&s));
+                sig.extend(neighbour_placement_signature(doc, *n, ns, depth, &neighbour_context));
                 keep_items.extend(k.into_iter().filter(|it| kept.insert(Arc::as_ptr(it))));
                 keep_stories.push(ns.clone());
             }
@@ -292,8 +340,9 @@ impl Cache {
             sig.push(h.finish() as usize);
         }
         let with_vars = crate::vars::has_vars(story);
-        let running = with_vars && crate::vars::has_running(doc, story);
-        if with_vars {
+        let margin_running = on == ShownOn::Own && margin_needs_running(doc, story);
+        let running = (with_vars && crate::vars::has_running(doc, story)) || margin_running;
+        if with_vars || margin_running {
             // Variables depend on the page count, sections and definitions (and running headers on
             // the whole document).
             use std::hash::{Hash, Hasher};
@@ -304,7 +353,9 @@ impl Cache {
                 sig.push(doc_signature(doc) as usize);
             }
         }
-        let with_xrefs = crate::xref::has_xrefs(story);
+        // Margin collisions use neighbours' displayed reference baselines, including resolved xrefs.
+        let margin_xrefs = on == ShownOn::Own && margin_needs_xrefs(doc, story);
+        let with_xrefs = crate::xref::has_xrefs(story) || margin_xrefs;
         if with_xrefs {
             // Cross-references show other stories' text and pages.
             use std::hash::{Hash, Hasher};
@@ -317,11 +368,22 @@ impl Cache {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             format!("{:?}{:?}", doc.footnote_options, doc.note_series).hash(&mut h);
-            if story.notes.iter().any(|n| !doc.note_options(n.series).placement.is_column_foot()) {
+            if story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {
                 // Another story's margin note can push ours down on their shared page.
                 doc_signature(doc).hash(&mut h);
                 for layer in &doc.layers {
                     (layer.id, layer.visible).hash(&mut h);
+                }
+                // Hidden hosts and inactive containing states can remove a neighbour's margin
+                // note without changing its story or spread allocation.
+                let mut items: Vec<&Item> = doc.spreads.iter().chain(&doc.parents).flat_map(|sp| sp.items.iter().map(AsRef::as_ref)).collect();
+                items.extend(doc.anchored_items().into_iter().map(|(_, item)| item));
+                let mut seen = HashSet::new();
+                while let Some(item) = items.pop() {
+                    if seen.insert(std::ptr::from_ref(item)) {
+                        (item.id, item.hidden, item.layer, item.states.len(), item.active_state).hash(&mut h);
+                        items.extend(item.children().iter().map(AsRef::as_ref));
+                    }
                 }
             }
             for series in &doc.note_series {
@@ -381,7 +443,8 @@ impl Cache {
         // Parent-page items are composed per page: markers show its name, variables need its index.
         let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
-        let others: Vec<Arc<ComposedStory>> = neighbours.iter().map(|n| self.neighbour(doc, *n, depth, resolved)).collect();
+        let xrefs = with_xrefs.then(|| self.xref_index(doc));
+        let others: Vec<Arc<ComposedStory>> = neighbours.iter().map(|n| self.neighbour(doc, *n, depth, resolved, &neighbour_context)).collect();
         let (mut out, trace) = crate::wrap::compose_among_traced(
             doc,
             sid,
@@ -389,17 +452,17 @@ impl Cache {
                 page_name,
                 section_marker,
                 page,
-                running,
+                running: running.clone(),
                 label: None,
-                xrefs: with_xrefs.then(|| self.xref_index(doc)),
+                xrefs: xrefs.clone(),
                 placed: placed.clone(),
-                notes_start: None,
+                ..Default::default()
             },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
             before.as_ref().map(|(story, composed, trace)| Reuse { story, composed, trace }),
         );
         if on == ShownOn::Own {
-            crate::notes::stack_page_margins(doc, sid, &ComposeOptions { placed, ..Default::default() }, &mut out);
+            crate::notes::stack_page_margins(doc, sid, &ComposeOptions { placed, xrefs, running, ..Default::default() }, &mut out);
         }
         let (out, trace) = (Arc::new(out), trace.map(Arc::new));
         let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
@@ -464,6 +527,8 @@ impl Cache {
                     && fb.tables.is_empty()
                     && fa.notes.is_empty()
                     && fb.notes.is_empty()
+                    && fa.catchwords.is_empty()
+                    && fb.catchwords.is_empty()
                     && fa.objects.is_empty()
                     && fb.objects.is_empty()
             }) && a.styles == b.styles;
@@ -479,12 +544,25 @@ impl Cache {
         out
     }
 
+    /// Resolve neighbours for display, bypassing index lookups during a guarded index build.
+    fn neighbour_context(&self, doc: &Document, neighbours: &[StoryId]) -> ComposeOptions {
+        if INDEX_BUILDS.with(Cell::get) > 0 || !neighbours.iter().filter_map(|sid| doc.story(*sid)).any(|st| indexed_neighbour(doc, st)) {
+            return ComposeOptions::default();
+        }
+        ComposeOptions {
+            running: doc.stories.values().any(|st| crate::vars::has_running(doc, st)).then(|| self.running_index(doc)),
+            xrefs: doc.stories.values().any(|st| crate::xref::has_xrefs(st)).then(|| self.xref_index(doc)),
+            ..Default::default()
+        }
+    }
+
     /// Story `sid` composed for the wrap of its anchored objects in other stories: without other
     /// stories' anchored objects (no cycles), and outside the cache when it needs the document-wide
     /// indexes (they compose every story).
-    fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved) -> Arc<ComposedStory> {
-        if indexed(doc, sid) {
-            Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions::default(), &[]))
+    fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved, context: &ComposeOptions) -> Arc<ComposedStory> {
+        if doc.stories.get(&sid).is_some_and(|st| indexed_neighbour(doc, st)) {
+            let placed = neighbour_placements(doc, sid, depth, context);
+            Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions { placed, ..context.clone() }, &[]))
         } else {
             self.resolve(doc, sid, false, depth, resolved)
         }

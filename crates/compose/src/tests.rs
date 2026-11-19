@@ -504,6 +504,20 @@ fn page_number_wider_than_its_frame_stays_whole() {
 }
 
 #[test]
+fn generated_hebrew_page_number_reads_right_to_left() {
+    for direction in [designcraft_doc::TextDirection::LeftToRight, designcraft_doc::TextDirection::RightToLeft] {
+        let text = format!("abc {} def", designcraft_doc::story::PAGE_NUMBER);
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs { direction: Some(direction), ..Default::default() });
+        let mut specs = frame_specs(&d, sid);
+        specs[0].page_name = Some(designcraft_doc::NumberStyle::HebrewPlain.format(15));
+        let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+        let glyphs = &all_lines(&cs)[0].glyphs;
+        let x = |ch| glyphs.iter().find(|g| g.rendered_char == ch).unwrap().x;
+        assert!(x('ט') > x('ו'), "generated Hebrew numeral reads left to right in {direction:?}: {glyphs:?}");
+    }
+}
+
+#[test]
 fn hostile_wrap_geometry_terminates() {
     let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);
     let mut specs = frame_specs(&d, sid);
@@ -5637,9 +5651,14 @@ fn drop_cap_words_override_characters_and_keep_hebrew_marks() {
 #[test]
 fn drop_cap_words_end_at_whitespace_and_clamp_to_the_paragraph() {
     let props = designcraft_doc::ParaProps { drop_cap_lines: 2, drop_cap_words: 2, ..Default::default() };
-    for (text, expected) in
-        [("  one\t two\u{a0}three", "  one\t two".len()), ("one", 3), ("one two\n", 7), ("one־two three four", "one־two three".len())]
-    {
+    for (text, expected) in [
+        ("  one\t two\u{a0}three", "  one\t two".len()),
+        ("one", 3),
+        ("one two\n", 7),
+        ("one־two three four", "one־two three".len()),
+        ("  \t ", 0),
+        ("one\t ", 3),
+    ] {
         assert_eq!(super::drop_cap_end(text, 0..text.len(), &props, false), expected);
     }
     assert_eq!(super::drop_cap_end("one two", 0..7, &props, true), 0);
@@ -5649,10 +5668,78 @@ fn drop_cap_words_end_at_whitespace_and_clamp_to_the_paragraph() {
 }
 
 #[test]
+fn unplaced_drop_word_is_reported_overset_from_the_paragraph_start() {
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(2, 0) };
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 4.0), para.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, Some(0));
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, None);
+    assert!(all_lines(&cs).iter().any(|line| line.drop_cap.is_some()));
+}
+
+#[test]
+fn drop_word_wider_than_the_column_is_overset() {
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(3, 0) };
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 300.0), para.clone());
+    let wide = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(wide.overset_at, None);
+    let line = all_lines(&wide)[0];
+    let cap = line.drop_cap.unwrap();
+    let indent = text_x(line, cap.end) - line.x0;
+    assert!(indent > 0.0);
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, indent / 2.0, 300.0), para);
+    let narrow = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(narrow.overset_at, Some(0));
+    assert!(all_lines(&narrow).is_empty());
+}
+
+#[test]
+fn drop_cap_words_stop_before_hard_breaks() {
+    let props = designcraft_doc::ParaProps { drop_cap_lines: 2, drop_cap_words: 2, ..Default::default() };
+    for (text, expected) in [("one\u{2028}two three", 3), ("one \u{2028}two", 3), ("one two\u{E002}", 7), ("\u{2028}one two", 0)] {
+        assert_eq!(super::drop_cap_end(text, 0..text.len(), &props, false), expected, "{text:?}");
+    }
+}
+
+#[test]
+fn word_drop_cap_stops_at_a_forced_line_break() {
+    let text = format!("one\u{2028}two three four {LOREM}");
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(2, 1) };
+    let (d, sid, _) = drop_doc(&text, para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines[0].glyphs.iter().any(|g| g.byte == 0 && g.y > 1.0));
+    let two = "one\u{2028}".len();
+    let (line, glyph) = lines.iter().enumerate().find_map(|(i, l)| l.glyphs.iter().find(|g| g.byte == two && g.len > 0).map(|g| (i, g))).unwrap();
+    assert!(line >= 1, "two starts on line {line}; the forced break must survive the drop cap");
+    assert!(glyph.y.abs() < 1e-6, "two must be body text, got y={}", glyph.y);
+}
+
+#[test]
+fn scaled_single_character_drop_cap_indent_ignores_word_spacing() {
+    let (mut d, sid, _) = drop_doc(LOREM, drop_cap(2, 1));
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(1.0);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().paras[0].para.word_space_desired = Some(2.0);
+    let spaced = compose_story(&d, sid, &ComposeOptions::default());
+    let plain_x = text_x(all_lines(&plain)[1], 1);
+    let spaced_x = text_x(all_lines(&spaced)[1], 1);
+    assert!((plain_x - spaced_x).abs() < 1e-6, "line 2 indent: spacing 1.0={plain_x}, spacing 2.0={spaced_x}");
+}
+
+#[test]
 fn hostile_drop_cap_values_do_not_panic() {
     for (lines, chars) in [(u32::MAX, u32::MAX), (1_000_000, 1), (2, 0), (0, 3)] {
         let (d, sid, _) = drop_doc(LOREM, drop_cap(lines, chars));
         let cs = compose_story(&d, sid, &ComposeOptions::default());
+        if chars == u32::MAX {
+            // The clamped maximum cap is wider than the column and must remain unplaced.
+            assert_eq!(cs.overset_at, Some(0));
+            assert!(all_lines(&cs).is_empty());
+            continue;
+        }
         let g = &cs.frames[0].lines[0].glyphs[0];
         assert!(g.y.is_finite() && g.sy.is_finite() && g.y <= 12.0 * 25.0, "{lines}/{chars}: {}", g.y);
     }
@@ -5723,6 +5810,80 @@ fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
 }
 
 #[test]
+fn hebrew_body_height_skips_a_quote_in_a_latin_only_face() {
+    const FAMILY: &str = "DC Test Hebrew Quoted Body";
+    const LATIN: &str = "DC Test Latin Body Quote";
+    let db = designcraft_fonts::FontDb::global();
+    let Some(hebrew) = designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z') else { return };
+    let Some(latin) = designcraft_fonts::testing::font_with_glyph(LATIN, &['"'], 'H') else { return };
+    db.add_font(hebrew);
+    db.add_font(latin);
+    let compose = |quote: &str| {
+        let text = format!("הדה {quote}{}", "הדה הדה ".repeat(20));
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        if !quote.is_empty() {
+            let start = "הדה ".len();
+            story.format_chars(start..start + quote.len(), |f| f.over.font_family = Some(LATIN.into()));
+        }
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose("");
+    let quoted = compose("\"");
+    let plain_line = all_lines(&plain)[0];
+    let quoted_line = all_lines(&quoted)[0];
+    let quote = quoted_line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    assert_eq!(quote.face.family, LATIN);
+    assert_eq!(quote.face.glyph_for('ה'), 0);
+    let first = plain_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let after_quote = quoted_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((first.sy - after_quote.sy).abs() < 1e-6, "plain scale {}, quoted scale {}", first.sy, after_quote.sy);
+    assert!((first.y - after_quote.y).abs() < 0.01);
+}
+
+#[test]
+fn hebrew_drop_word_aligns_with_latin_body_cap_height() {
+    const FAMILY: &str = "DC Test Hebrew Drop Latin Body";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' ', 'a'], 'z').unwrap());
+    let text = format!("הדה {}", "aaa aaa ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    let body_cap_top = body.y - body.face.cap_height * body.sy;
+    assert!((top(dropped) - body_cap_top).abs() < 0.01, "drop top {}, body cap top {body_cap_top}", top(dropped));
+    assert!((top(dropped) - top(body)).abs() > 0.1, "the body's ink top must differ from its declared cap height");
+}
+
+#[test]
+fn hebrew_presentation_form_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Presentation Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['\u{FB2E}', 'ה', 'ד', ' '], 'z').unwrap());
+    let text = format!("\u{FB2E}דה {}", "הדה הדה הדה ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "\u{FB2E}דה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
 fn hebrew_drop_word_aligns_top_strokes_instead_of_serifs() {
     use designcraft_geom::kurbo::{Line as OutlineLine, ParamCurve as _};
 
@@ -5758,7 +5919,7 @@ fn hebrew_drop_word_aligns_top_strokes_instead_of_serifs() {
 }
 
 #[test]
-fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_two_lines() {
+fn right_to_left_drop_word_keeps_size_hangs_from_the_tops_and_indents_intersecting_lines() {
     const FAMILY: &str = "DC Test Hebrew Keep Size";
     // A horizontal top makes ink-top alignment equivalent to stroke-top alignment.
     designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z').unwrap());
@@ -5815,6 +5976,125 @@ fn keep_size_drop_cap_trailing_space_follows_word_spacing() {
     let body_gap = spaced_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
     let normal_body_gap = normal_lines[0].glyphs.iter().find(|g| g.byte == 10).unwrap().adv;
     assert!((body_gap - normal_body_gap - gap).abs() < 0.01);
+}
+
+#[test]
+fn s2c_inline_fixed_leading_pitch() {
+    let text = format!("{LOREM} {LOREM}");
+    let (mut d, sid, _) = drop_doc(&text, ParaAttrs::default());
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().format_chars(20..25, |f| f.over.size = Some(13.0));
+    let after = compose_story(&d, sid, &ComposeOptions::default());
+    let pitches = |cs: &ComposedStory| all_lines(cs).windows(2).map(|l| l[1].baseline - l[0].baseline).collect::<Vec<_>>();
+    eprintln!("inline 1.3x pitches before {:?}, after {:?}", pitches(&before), pitches(&after));
+    assert!(pitches(&after).iter().all(|p| (*p - 12.0).abs() < 0.01));
+}
+
+#[test]
+fn s2c_note_drop_word_clears_next_line() {
+    let text = "הדה הדה הדה ".repeat(40);
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs::default());
+    let fmt = ParaFormat {
+        para: ParaAttrs {
+            direction: Some(designcraft_doc::TextDirection::RightToLeft),
+            align: Some(Align::Right),
+            drop_cap_words: Some(1),
+            drop_cap_scale: Some(1.6),
+            ..drop_cap(2, 0)
+        },
+        chars: designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(15.1)), ..Default::default() },
+        ..Default::default()
+    };
+    d.story_mut(sid).unwrap().insert_note(5, &text, fmt);
+    let note = std::sync::Arc::make_mut(&mut d.story_mut(sid).unwrap().notes[0]);
+    note.text.format_chars(0.."הדה".len(), |f| f.over.size = Some(16.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let note = &cs.frames[0].notes[0];
+    let lines = all_lines(&note.text);
+    let dc = lines[0].drop_cap.unwrap();
+    let db = designcraft_fonts::FontDb::global();
+    let ink = |g: &PlacedGlyph, line: &Line| {
+        let r = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        Rect::new(g.x + r.x0 * g.sx, line.baseline + g.y + r.y0 * g.sy, g.x + r.x1 * g.sx, line.baseline + g.y + r.y1 * g.sy)
+    };
+    for a in lines[0].glyphs.iter().filter(|g| g.byte < dc.end && g.visible && g.len > 0) {
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            for b in line.glyphs.iter().filter(|g| g.visible && g.len > 0) {
+                assert!(ink(a, lines[0]).intersect(ink(b, line)).area() < 0.01, "drop word intersects note line {}", i + 1);
+            }
+        }
+        if a.byte < "הדה".len() {
+            assert!((a.sy * a.face.upem - 16.0).abs() < 0.01);
+        }
+    }
+}
+
+#[test]
+fn s2c_ratio_shift_baselines_and_indent() {
+    let text = "הדה הדה הדה ".repeat(40);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..Default::default() };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    {
+        let st = d.story_mut(sid).unwrap();
+        st.paras[0].para.drop_cap_words = Some(1);
+        st.paras[0].para.drop_cap_lines = Some(2);
+        st.paras[0].para.drop_cap_scale = Some(1.6);
+        st.format_chars(0.."הדה".len(), |f| {
+            f.over.size = Some(40.0);
+            f.over.baseline_shift = Some(1.0);
+        });
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let before = all_lines(&plain);
+    let dc = lines[0].drop_cap.unwrap();
+    for (i, l) in lines.iter().take(4).enumerate() {
+        assert!((l.baseline - before[i].baseline).abs() < 0.01, "line {i}: {} vs {}", l.baseline, before[i].baseline);
+    }
+    let cap = lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((cap.sy * cap.face.upem - 16.0).abs() < 0.01);
+    let right = |l: &Line| l.glyphs.iter().filter(|g| g.visible && g.byte >= dc.end).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
+    assert!((300.0 - right(lines[1]) - dc.rect.width()).abs() < 0.01);
+    assert!((300.0 - right(lines[2])).abs() < 0.01);
+    eprintln!(
+        "baseline delta {}, line-2 indent {} pt, line-3 indent {} pt",
+        lines[0].baseline - before[0].baseline,
+        300.0 - right(lines[1]),
+        300.0 - right(lines[2])
+    );
+    d.story_mut(sid).unwrap().format_chars(0.."הדה".len(), |f| f.over.baseline_shift = Some(8.0));
+    let raised = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&raised)[0];
+    let db = designcraft_fonts::FontDb::global();
+    for g in line.glyphs.iter().filter(|g| g.byte < "הדה".len()) {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(line.drop_cap.unwrap().rect.y0 <= line.baseline + g.y + ink.y0 * g.sy + 0.01);
+    }
+    assert!((line.baseline - before[0].baseline).abs() < 0.01);
+}
+
+#[test]
+fn s2c_short_note_drop_cap_clears_the_next_note() {
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs::default());
+    let fmt = ParaFormat {
+        para: ParaAttrs { drop_cap_keep_size: Some(true), ..drop_cap(2, 1) },
+        chars: designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(12.0)), ..Default::default() },
+        ..Default::default()
+    };
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(5, "A short note.", fmt.clone());
+    std::sync::Arc::make_mut(&mut st.notes[0]).text.format_chars(0..1, |f| f.over.size = Some(30.0));
+    st.insert_note(15, "Another note.", ParaFormat { para: ParaAttrs::default(), ..fmt });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let notes = &cs.frames[0].notes;
+    assert_eq!(notes.len(), 2);
+    let first = all_lines(&notes[0].text)[0];
+    let next = all_lines(&notes[1].text)[0];
+    let cap_bottom = notes[0].origin.y + first.drop_cap.unwrap().rect.y1;
+    let next_top = notes[1].origin.y + next.baseline - next.ascent;
+    eprintln!("short-note cap bottom {cap_bottom}, next line top {next_top}");
+    assert!(cap_bottom <= next_top + 0.01, "drop cap overprints the following note");
 }
 
 #[test]
@@ -5943,6 +6223,20 @@ fn drop_cap_takes_its_character_style_and_nested_styles_count_it() {
     assert_eq!(fill(&cs, at(3)), "Initial Red", "the second nested style starts after the drop cap");
     let first_space = LOREM.find(' ').unwrap();
     assert_eq!(fill(&cs, at(first_space + 1)), "[Black]");
+}
+
+#[test]
+fn drop_word_hit_testing_reaches_both_edges() {
+    let (d, sid, _) = drop_doc("one body words", ParaAttrs { drop_cap_words: Some(1), ..drop_cap(3, 0) });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let cap = line.drop_cap.unwrap();
+    let first = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let end = "one".len();
+    let last = line.glyphs.iter().rfind(|g| g.len > 0 && g.byte < end).unwrap();
+    let y = (cap.rect.y0 + cap.rect.y1) / 2.0;
+    assert_eq!(hit(&cs, 0, Point::new((first.x + 0.01).max(cap.rect.x0), y)), Some(0));
+    assert_eq!(hit(&cs, 0, Point::new((last.x + last.adv - 0.01).min(cap.rect.x1 - 0.01), y)), Some(end));
 }
 
 #[test]
@@ -11186,6 +11480,55 @@ fn assert_note_parts(cs: &ComposedStory, id: u64, end: usize) {
     assert_eq!(next, end);
 }
 
+/// Re-laying earlier parts for a continuation must preserve their marker widths and byte breaks.
+#[test]
+fn split_footnote_parts_keep_their_page() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 9, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 216.0), lid, "Opening.\nReference.\nClosing.", ParaFormat::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 756.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    // Repeated markers fill each narrow line: changing 9 to 10 adds a digit at every marker,
+    // so recomposing the first area with page 10 moves the continuation's starting byte.
+    let paragraph = vec![story::PAGE_NUMBER.to_string(); 12].join(" ");
+    let text = vec![paragraph; 20].join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let specs = frame_specs(&d, sid);
+    assert_eq!(specs.iter().map(|f| f.page_name.as_deref()).collect::<Vec<_>>(), vec![Some("9"), Some("10")]);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let a = cs.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+    let b = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    assert_note_parts(&cs, id, text.len());
+    let first_markers: String = a.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte > 0 && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert!(!first_markers.is_empty());
+    assert!(first_markers.chars().all(|c| c == '9'), "first part markers: {first_markers}");
+    let last_marker = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .rfind(|g| text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)))
+        .unwrap()
+        .byte;
+    let continued_marker: String = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte == last_marker && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert_eq!(continued_marker, "10");
+}
+
 #[test]
 fn split_footnote_threads_across_columns() {
     let (d, sid, id, text) = split_footnote_fixture(2, 1, false, "Opening.\nReference.\nClosing.", 40);
@@ -11213,6 +11556,47 @@ fn split_footnote_continuation_precedes_new_note() {
     assert!(notes[0].rect.y0 < notes[1].rect.y0);
     assert!(notes[0].rect.y1 <= notes[1].rect.y0 + 0.01);
     assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_continuation_does_not_block_the_next_reference() {
+    let body = format!("Opening.\nReference.{}Next reference.\nClosing.", story::FRAME_BREAK);
+    let (mut d, sid, id, text) = split_footnote_fixture(1, 5, false, &body, 60);
+    let at = d.story(sid).unwrap().text.find("Next reference").unwrap() + 5;
+    let other_text = "Later note.";
+    let other = d.story_mut(sid).unwrap().insert_note(at, other_text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "the pending continuation must not strand the next reference line");
+    assert_eq!(cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).count(), 3);
+    assert_note_parts(&cs, id, text.len());
+    assert_note_parts(&cs, other, other_text.len());
+    let frame = cs.frames.iter().find(|f| f.notes.iter().any(|n| n.id == other)).unwrap();
+    assert!(frame.lines.iter().any(|l| l.glyphs.iter().any(|g| g.byte == at && g.len > 0)), "note B must stay with its reference");
+}
+
+#[test]
+fn split_continuation_uses_its_own_series_options() {
+    for (allow, spacing) in [(false, 8.0), (true, 400.0)] {
+        let body = format!("Opening.\nReference.{}Next reference.\nClosing.", story::FRAME_BREAK);
+        let (mut d, sid, id, text) = split_footnote_fixture(1, 5, false, &body, 60);
+        let options = d.footnote_options.clone();
+        d.note_series.push(designcraft_doc::NoteSeries { id: 1, name: "Independent".into(), options });
+        d.footnote_options.allow_split = allow;
+        d.footnote_options.space_before = spacing;
+        let at = d.story(sid).unwrap().text.find("Next reference").unwrap() + 5;
+        let other_text = "Later note.";
+        let other = d.story_mut(sid).unwrap().insert_note(at, other_text, ParaFormat::default()).unwrap();
+        for note in &mut d.story_mut(sid).unwrap().notes {
+            std::sync::Arc::make_mut(note).series = 1;
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset(), "series 0 must not disable another series' continuation");
+        assert_eq!(cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).count(), 3);
+        assert_note_parts(&cs, id, text.len());
+        assert_note_parts(&cs, other, other_text.len());
+        let frame = cs.frames.iter().find(|f| f.notes.iter().any(|n| n.id == other)).unwrap();
+        assert!(frame.lines.iter().any(|l| l.glyphs.iter().any(|g| g.byte == at && g.len > 0)));
+    }
 }
 
 #[test]
@@ -11696,6 +12080,519 @@ fn footnote_columns_split_continues_in_first_note_column() {
 }
 
 #[test]
+fn placed_anchored_margin_notes_share_the_regular_page_stack() {
+    use designcraft_doc::{MarginSide, NotePlacement};
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.space_between = 7.0;
+    let (mut item, anchored) = anchored_text_frame(&mut d, "Anchored", 200.0, 120.0);
+    item.xf = Affine::scale(1.5);
+    let fid = item.id;
+    d.story_mut(anchored).unwrap().insert_note(8, "Anchored\nSecond\nThird", Default::default());
+    let mut group = designcraft_doc::Item::new(ItemId(d.alloc()), d.default_layer(), designcraft_doc::Shape::Group, Default::default());
+    group.content = Content::Group { items: vec![Arc::new(item)] };
+    let (host, _) = body_holding(&mut d, group);
+    let positions = placed::placements(&d, anchored, &mut |host| Arc::new(compose_story_unstacked(&d, host, &Default::default())));
+    assert_eq!(positions.len(), 1);
+    let xf = positions[0].1.xf * d.text_xf(d.anchored_item(fid).unwrap());
+    let raw = compose_story_unstacked(&d, anchored, &Default::default());
+    let raw_rect = xf.transform_rect_bbox(raw.frames[0].notes[0].rect);
+    let (regular_frame, regular) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(120.0, raw_rect.y0 + 15.0, 420.0, raw_rect.y0 + 415.0),
+            d.default_layer(),
+            "Regular",
+            Default::default(),
+        )
+        .unwrap();
+    d.story_mut(regular).unwrap().insert_note(7, "Regular\nSecond\nThird", Default::default());
+    assert!(d.find(fid).is_none());
+    let a = compose_story(&d, anchored, &Default::default());
+    let b = compose_story(&d, regular, &Default::default());
+    let anchored_rect = xf.transform_rect_bbox(a.frames[0].notes[0].rect);
+    let regular_rect = d.text_xf(d.item(regular_frame).unwrap()).transform_rect_bbox(b.frames[0].notes[0].rect);
+    assert!(
+        anchored_rect.y0 >= regular_rect.y1 + 7.0 * 1.5 - 0.01 || regular_rect.y0 >= anchored_rect.y1 + 7.0 - 0.01,
+        "anchored {anchored_rect:?}, regular {regular_rect:?}"
+    );
+    let cache = Cache::new();
+    assert_eq!(cache.get(&d, anchored, None).frames[0].notes[0].rect, a.frames[0].notes[0].rect);
+    assert_eq!(cache.get(&d, regular, None).frames[0].notes[0].rect, b.frames[0].notes[0].rect);
+    d.item_mut(host).unwrap().hidden = true;
+    let hidden = cache.get(&d, regular, None);
+    assert_eq!(hidden.frames[0].notes[0].rect, compose_story(&d, regular, &Default::default()).frames[0].notes[0].rect);
+    assert!(hidden.frames[0].notes[0].rect.y0 < b.frames[0].notes[0].rect.y0);
+    d.item_mut(host).unwrap().hidden = false;
+    let host_story = d.item(host).unwrap().text_frame().unwrap().story;
+    std::sync::Arc::make_mut(&mut d.story_mut(host_story).unwrap().objects[0]).item.hidden = true;
+    let hidden_group = cache.get(&d, regular, None);
+    assert_eq!(hidden_group.frames[0].notes[0].rect, hidden.frames[0].notes[0].rect);
+}
+
+#[test]
+fn margin_neighbours_use_the_displayed_cross_reference_index() {
+    use designcraft_doc::{CrossRef, MarginSide, NotePlacement};
+    let mut d = Document::new(&NewDocument { start_page: 99999, ..Default::default() });
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.separator = " ".into();
+    d.footnote_options.space_between = 7.0;
+    let lid = d.default_layer();
+    let (_, target) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 600.0, 200.0, 760.0), lid, "Destination", Default::default()).unwrap();
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Destination");
+    // Indexing a destination that also has margin notes must not re-enter final stacking.
+    let end = d.story(target).unwrap().text.len();
+    d.story_mut(target).unwrap().insert_note(end, "Destination note", Default::default());
+    let (_, a) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 172.0, 540.0), lid, "See  reference", Default::default()).unwrap();
+    d.story_mut(a).unwrap().insert_xref(4, CrossRef { target: anchor, text: Some("<pageNum /> ".repeat(16)), ..Default::default() });
+    let end = d.story(a).unwrap().text.len();
+    d.story_mut(a).unwrap().insert_note(end, "First\nSecond\nThird", Default::default());
+    let index = Arc::new(crate::xref::XrefIndex::build(&d, &|sid| Arc::new(compose_story_unstacked(&d, sid, &Default::default()))));
+    let opts = ComposeOptions { xrefs: Some(index.clone()), ..Default::default() };
+    let raw = compose_story_unstacked(&d, a, &opts);
+    let unresolved = compose_story_unstacked(&d, a, &Default::default());
+    let baseline = raw.frames[0].notes[0].reference_baseline;
+    assert!(baseline > unresolved.frames[0].notes[0].reference_baseline + 20.0, "fixture must wrap resolved page numbers onto later lines");
+    let (_, b) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, baseline + 2.0, 220.0, baseline + 350.0), lid, "Other", Default::default()).unwrap();
+    d.story_mut(b).unwrap().insert_note(5, "Next\nSecond\nThird", Default::default());
+    for reverse in [false, true] {
+        let cache = Cache::new();
+        let (ca, cb) = if reverse {
+            let cb = cache.get(&d, b, None);
+            (cache.get(&d, a, None), cb)
+        } else {
+            (cache.get(&d, a, None), cache.get(&d, b, None))
+        };
+        let ar = ca.frames[0].notes[0].rect;
+        let br = cb.frames[0].notes[0].rect;
+        assert!(ar.y1 + 7.0 <= br.y0 + 0.01 || br.y1 + 7.0 <= ar.y0 + 0.01, "resolved stacks overlap: {ar:?}, {br:?}");
+        assert_eq!(ar, compose_story(&d, a, &opts).frames[0].notes[0].rect);
+        assert_eq!(br, compose_story(&d, b, &opts).frames[0].notes[0].rect);
+    }
+}
+
+#[test]
+fn cross_reference_anchor_pages_follow_note_placement_changes() {
+    use designcraft_doc::{MarginSide, NotePlacement};
+    for series in [0, 1] {
+        let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        d.footnote_options.allow_split = false;
+        if series != 0 {
+            d.note_series.push(designcraft_doc::NoteSeries { id: series, name: "Sources".into(), options: d.footnote_options.clone() });
+        }
+        let lid = d.default_layer();
+        let (a, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 236.0, 110.0), lid, "Lead\nReference\nAnchor", Default::default()).unwrap();
+        let (b, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 236.0, 500.0), lid, "", Default::default()).unwrap();
+        d.thread(a, b).unwrap();
+        let st = d.story_mut(sid).unwrap();
+        st.insert_note(14, "First\nSecond\nThird\nFourth", Default::default());
+        Arc::make_mut(&mut st.notes[0]).series = series;
+        let anchor = st.insert_anchor(st.text.find("Anchor").unwrap(), "Anchor");
+        let cache = Cache::new();
+        assert_eq!(cache.xref_index(&d).page_index(anchor), Some(1));
+        let placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+        if series == 0 {
+            d.footnote_options.placement = placement;
+        } else {
+            d.note_series[0].options.placement = placement;
+        }
+        let fresh = Cache::new().xref_index(&d);
+        assert_eq!(fresh.page_index(anchor), Some(0));
+        assert_eq!(cache.xref_index(&d).page_index(anchor), fresh.page_index(anchor), "series {series}: stale anchor page after placement change");
+    }
+}
+
+#[test]
+fn cached_table_cell_notes_follow_default_spacing_changes() {
+    let (mut d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 240.0, 400.0), ParaAttrs::default());
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 200.0);
+    table.cells[0].text.insert(0, "Cell reference.");
+    table.cells[0].text.insert_note(5, "Cell footnote.", Default::default());
+    d.story_mut(sid).unwrap().insert_table(0, table);
+    assert!(d.story(sid).unwrap().notes.is_empty());
+    let cache = Cache::new();
+    let before = cache.get(&d, sid, None);
+    let reservation = |d: &Document, cs: &ComposedStory| {
+        let specs = frame_specs(d, sid);
+        let placed = &cs.frames[0].notes[0];
+        let cell = notes::CellNote {
+            source: notes::NoteSource::Cell { table: 77, row: 0, col: 0, slot: 0, k: 0 },
+            label: placed.label.clone(),
+            note: placed.note.clone(),
+        };
+        notes::Notes::continuing(d, d.story(sid).unwrap(), &specs, None).reserve_cells(
+            d,
+            notes::NoteColumn { frame_index: 0, column_index: 0, width: specs[0].area.width(), frame: &specs[0] },
+            &[cell],
+            &ComposeOptions::default(),
+        )
+    };
+    let before_reserved = reservation(&d, &before);
+    d.footnote_options.space_before += 36.0;
+    let after = cache.get(&d, sid, None);
+    let fresh = Cache::new().get(&d, sid, None);
+    // Column-foot notes stay bottom-aligned; spacing changes their body reservation.
+    assert!(!Arc::ptr_eq(&before, &after), "cell-only notes must invalidate the host's cached composition");
+    let column_note = |cs: &ComposedStory| {
+        assert!(cs.frames[0].tables[0].cells[0].text.frames[0].notes.is_empty());
+        assert_eq!(cs.frames[0].notes[0].source.as_ref(), "Cell footnote.");
+        cs.frames[0].notes[0].rect
+    };
+    assert_eq!(column_note(&after), column_note(&fresh));
+    assert_eq!(column_note(&before), column_note(&fresh));
+    assert!((reservation(&d, &fresh) - before_reserved - 36.0).abs() < 0.01);
+    assert_eq!(after.frames[0].tables[0].rect, fresh.frames[0].tables[0].rect);
+}
+
+fn margin_xref_index_cycle_fixture(anchored_host: bool) -> (Document, u64, StoryId) {
+    let (mut d, target, _) = doc_with("Target", Rect::new(36.0, 36.0, 200.0, 200.0), ParaAttrs::default());
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+    let host = if anchored_host {
+        let (item, embedded) = anchored_text_frame(&mut d, "Embedded destination", 100.0, 80.0);
+        d.story_mut(embedded).unwrap().insert_anchor(0, "Embedded destination");
+        let (host, _) = body_holding(&mut d, item);
+        d.item(host).unwrap().text_frame().unwrap().story
+    } else {
+        let (_, host) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(240.0, 36.0, 440.0, 200.0), d.default_layer(), "Host", Default::default()).unwrap();
+        let mut item = designcraft_doc::Item::new(
+            ItemId(d.alloc()),
+            d.default_layer(),
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)),
+        );
+        item.wrap.mode = designcraft_doc::WrapMode::BoundingBox;
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(item, Default::default()));
+        assert!(crate::wrap::neighbours(&d, target).contains(&host));
+        host
+    };
+    let end = d.story(host).unwrap().text.len();
+    d.story_mut(host).unwrap().insert_note(end, "Host margin note", Default::default());
+    let (_, source) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 700.0), d.default_layer(), "See ", Default::default()).unwrap();
+    d.story_mut(source).unwrap().insert_xref(4, designcraft_doc::CrossRef { target: anchor, format: "Page Number".into(), ..Default::default() });
+    (d, anchor, source)
+}
+
+#[test]
+fn xref_index_does_not_reenter_through_a_margin_wrap_neighbour() {
+    let (d, anchor, source) = margin_xref_index_cycle_fixture(false);
+    let cache = Cache::new();
+    assert_eq!(cache.xref_index(&d).page(anchor), Some("1"));
+    assert!(!cache.get(&d, source, None).frames[0].lines.is_empty());
+}
+
+#[test]
+fn xref_index_does_not_reenter_through_an_anchored_margin_host() {
+    let (d, anchor, source) = margin_xref_index_cycle_fixture(true);
+    let cache = Cache::new();
+    assert_eq!(cache.xref_index(&d).page(anchor), Some("1"));
+    assert!(!cache.get(&d, source, None).frames[0].lines.is_empty());
+}
+
+fn margin_running_definition(d: &mut Document) -> char {
+    let mut style = d.styles.paragraph[0].clone();
+    style.name = "Margin heading".into();
+    Arc::make_mut(&mut d.styles).paragraph.push(style);
+    d.text_variables.clear();
+    d.text_variables.push(designcraft_doc::vars::TextVariable::new(
+        "Margin running",
+        designcraft_doc::vars::VarKind::RunningHeader { style: "Margin heading".into(), use_: Default::default(), character: false },
+    ));
+    designcraft_doc::vars::var_char(0).unwrap()
+}
+
+#[test]
+fn margin_neighbours_use_the_displayed_running_index_and_rebuild_after_edits() {
+    let mut d = Document::new(&NewDocument::default());
+    let var = margin_running_definition(&mut d);
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.separator = " ".into();
+    d.footnote_options.space_between = 7.0;
+    let lid = d.default_layer();
+    let (_, heading) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(36.0, 600.0, 576.0, 750.0),
+            lid,
+            "Running title",
+            ParaFormat { style: "Margin heading".into(), ..Default::default() },
+        )
+        .unwrap();
+    let (_, a) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 172.0, 580.0), lid, &format!("See {var} reference"), Default::default()).unwrap();
+    let at = d.story(a).unwrap().text.len();
+    d.story_mut(a).unwrap().insert_note(at, "First\nSecond\nThird", Default::default());
+    let running = Cache::new().running_index(&d);
+    let opts = ComposeOptions { running: Some(running), ..Default::default() };
+    let raw = compose_story_unstacked(&d, a, &opts);
+    let baseline = raw.frames[0].notes[0].reference_baseline;
+    let empty_baseline = compose_story_unstacked(&d, a, &Default::default()).frames[0].notes[0].reference_baseline;
+    assert!(baseline > empty_baseline + 10.0, "resolved {baseline}, unresolved {empty_baseline}");
+    let (_, b) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, baseline + 8.0, 220.0, baseline + 310.0), lid, "Other", Default::default()).unwrap();
+    d.story_mut(b).unwrap().insert_note(5, "Next\nSecond\nThird", Default::default());
+    for reverse in [false, true] {
+        let cache = Cache::new();
+        let (ca, cb) = if reverse {
+            let b = cache.get(&d, b, None);
+            (cache.get(&d, a, None), b)
+        } else {
+            (cache.get(&d, a, None), cache.get(&d, b, None))
+        };
+        let (ar, br) = (ca.frames[0].notes[0].rect, cb.frames[0].notes[0].rect);
+        assert!(ar.y1 + 7.0 <= br.y0 + 0.01 || br.y1 + 7.0 <= ar.y0 + 0.01, "displayed running stacks overlap: {ar:?}, {br:?}");
+        assert_eq!(ar, compose_story(&d, a, &opts).frames[0].notes[0].rect);
+        assert_eq!(br, compose_story(&d, b, &opts).frames[0].notes[0].rect);
+    }
+    let cache = Cache::new();
+    let before = cache.get(&d, b, None).frames[0].notes[0].rect;
+    let st = d.story_mut(heading).unwrap();
+    st.delete(0..st.len());
+    st.insert(0, "X");
+    st.paras[0].style = "Margin heading".into();
+    let fresh = Cache::new().get(&d, b, None);
+    assert!(fresh.frames[0].notes[0].rect.y0 < before.y0 - 1.0);
+    assert_eq!(cache.get(&d, b, None).frames[0].notes[0].rect, fresh.frames[0].notes[0].rect);
+}
+
+#[test]
+fn running_index_tracks_condition_changes_that_move_its_source_page() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    d.conditions.push(designcraft_doc::Condition { name: "Prefix".into(), color: [255, 0, 0], visible: true });
+    let prefix = "prefix ".repeat(40);
+    let heading = "Header after prefix";
+    let body = format!("{prefix}\n{heading}");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &body, Default::default()).unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.format_chars(0..prefix.len(), |f| f.over.conditions = Some(vec!["Prefix".into()]));
+    st.format_paras(prefix.len() + 1..body.len(), |p| p.style = "Margin heading".into());
+    let cache = Cache::new();
+    let value = |i: &crate::vars::RunningIndex| i.value("Margin heading", false, Default::default(), 0);
+    assert_eq!(value(&cache.running_index(&d)), "");
+    d.conditions[0].visible = false;
+    assert_eq!(value(&Cache::new().running_index(&d)), heading);
+    assert_eq!(value(&cache.running_index(&d)), heading);
+    d.conditions[0].visible = true;
+    assert_eq!(value(&cache.running_index(&d)), value(&Cache::new().running_index(&d)));
+}
+
+fn margin_running_cycle_fixture(anchored: bool) -> Document {
+    let mut d = Document::new(&NewDocument::default());
+    let var = margin_running_definition(&mut d);
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    let (_, target) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(36.0, 36.0, 200.0, 200.0),
+            d.default_layer(),
+            "Target header",
+            ParaFormat { style: "Margin heading".into(), ..Default::default() },
+        )
+        .unwrap();
+    let host = if anchored {
+        let (item, embedded) = anchored_text_frame(&mut d, "Embedded heading", 100.0, 80.0);
+        d.story_mut(embedded).unwrap().paras[0].style = "Margin heading".into();
+        let (host, _) = body_holding(&mut d, item);
+        d.item(host).unwrap().text_frame().unwrap().story
+    } else {
+        let (_, host) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(240.0, 36.0, 440.0, 200.0), d.default_layer(), "Host", Default::default()).unwrap();
+        let mut item = designcraft_doc::Item::new(
+            ItemId(d.alloc()),
+            d.default_layer(),
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)),
+        );
+        item.wrap.mode = designcraft_doc::WrapMode::BoundingBox;
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(item, Default::default()));
+        assert!(crate::wrap::neighbours(&d, target).contains(&host));
+        host
+    };
+    let at = d.story(host).unwrap().text.len();
+    d.story_mut(host).unwrap().insert_note(at, "Host margin", Default::default());
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 700.0), d.default_layer(), &var.to_string(), Default::default()).unwrap();
+    d
+}
+
+#[test]
+fn running_index_does_not_reenter_through_a_margin_wrap_neighbour() {
+    let d = margin_running_cycle_fixture(false);
+    assert_eq!(Cache::new().running_index(&d).value("Margin heading", false, Default::default(), 0), "Target header");
+}
+
+#[test]
+fn running_index_does_not_reenter_through_an_anchored_margin_host() {
+    let d = margin_running_cycle_fixture(true);
+    assert_eq!(Cache::new().running_index(&d).value("Margin heading", false, Default::default(), 0), "Target header");
+}
+
+#[test]
+fn running_header_source_pages_follow_displayed_cross_references() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 99999, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    let (_, target) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 600.0, 500.0, 750.0), d.default_layer(), "Target", Default::default()).unwrap();
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+    let heading = "Header after reference";
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &format!("\n{heading}"), Default::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_xref(0, designcraft_doc::CrossRef { target: anchor, text: Some("<pageNum /> ".repeat(16)), ..Default::default() });
+    let at = st.text.find(heading).unwrap();
+    st.format_paras(at..st.text.len(), |p| p.style = "Margin heading".into());
+    let cache = Cache::new();
+    let displayed = cache.get(&d, sid, None);
+    let unresolved = compose_story_unstacked(&d, sid, &Default::default());
+    assert_eq!(crate::vars::place(&d, &unresolved, at).unwrap().0, 0, "fixture must fit the unresolved reference on the first page");
+    assert_eq!(crate::vars::place(&d, &displayed, at).unwrap().0, 1, "displayed page numbers must push the heading to page two");
+    let index = cache.running_index(&d);
+    assert_eq!(index.value("Margin heading", false, Default::default(), 0), "");
+    assert_eq!(index.value("Margin heading", false, Default::default(), 1), heading);
+}
+
+#[test]
+fn running_header_source_pages_follow_named_format_edits() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 99999, facing_pages: false, ..Default::default() });
+    margin_running_definition(&mut d);
+    d.xref_formats.push(designcraft_doc::XrefFormat { name: "Repeated page".into(), definition: "<pageNum /> ".repeat(16) });
+    let (_, target) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 600.0, 500.0, 750.0), d.default_layer(), "Target", Default::default()).unwrap();
+    let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+    let heading = "Header after reference";
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 96.0), d.default_layer(), &format!("\n{heading}"), Default::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 750.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert_xref(0, designcraft_doc::CrossRef { target: anchor, format: "Repeated page".into(), ..Default::default() });
+    let at = st.text.find(heading).unwrap();
+    st.format_paras(at..st.text.len(), |p| p.style = "Margin heading".into());
+    let source = d.stories[&sid].clone();
+    let cache = Cache::new();
+    let value = |i: &crate::vars::RunningIndex| i.value("Margin heading", false, Default::default(), 0);
+    assert_eq!(crate::vars::place(&d, &cache.get(&d, sid, None), at).unwrap().0, 1);
+    assert_eq!(value(&cache.running_index(&d)), "");
+    for (definition, expected_page) in [("Short".to_string(), 0), ("<pageNum /> ".repeat(16), 1)] {
+        d.xref_formats.last_mut().unwrap().definition = definition;
+        let displayed = cache.get(&d, sid, None);
+        assert_eq!(crate::vars::place(&d, &displayed, at).unwrap().0, expected_page);
+        let expected = if expected_page == 0 { heading } else { "" };
+        assert_eq!(value(&Cache::new().running_index(&d)), expected);
+        assert_eq!(value(&cache.running_index(&d)), expected, "warm index must follow the displayed source page after a format edit");
+    }
+    assert!(Arc::ptr_eq(&source, &d.stories[&sid]), "format edits must not rely on a story revision to invalidate the index");
+}
+
+#[test]
+fn indexed_margin_neighbours_keep_their_anchored_frame_placements() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 20.0;
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    let text = "One.\nTwo.\nThree.\nFour.\nFive.\nSix.";
+    let (embedded, sid) = anchored_text_frame(&mut d, text, 100.0, 25.0);
+    let (host_frame, _) = body_holding(&mut d, embedded);
+    let host = d.item(host_frame).unwrap().text_frame().unwrap().story;
+    let (continuation, empty) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), "", Default::default()).unwrap();
+    d.item_mut(continuation).unwrap().text_frame_mut().unwrap().story = sid;
+    d.stories.remove(&empty);
+    d.story_mut(sid).unwrap().frames.push(continuation);
+    d.story_mut(sid).unwrap().format_paras(0..text.len(), |p| p.para.grid_align = Some(GridAlign::AllLines));
+    anchor_box(&mut d, sid, text.find("Four.").unwrap(), 0.0, 0.0, true, WrapMode::BoundingBox);
+    let end = d.story(sid).unwrap().len();
+    d.story_mut(sid).unwrap().insert_note(end, "Margin note", Default::default());
+    let (_, recipient) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), &LOREM.repeat(4), Default::default()).unwrap();
+    assert!(crate::wrap::neighbours(&d, recipient).contains(&sid));
+    let before = Cache::new().get(&d, recipient, None);
+    let var = margin_running_definition(&mut d);
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(450.0, 600.0, 550.0, 750.0), d.default_layer(), &var.to_string(), Default::default()).unwrap();
+    let cache = Cache::new();
+    let after = cache.get(&d, recipient, None);
+    assert_eq!(line_layout(&after), line_layout(&before), "an unrelated running consumer must not move the anchored neighbour's wrap");
+    d.story_mut(host).unwrap().insert(0, "Preface.\n");
+    let fresh = Cache::new().get(&d, recipient, None);
+    assert_ne!(line_layout(&fresh), line_layout(&after), "fixture host edit must move the wrap");
+    assert_eq!(line_layout(&cache.get(&d, recipient, None)), line_layout(&fresh), "recipient cache must follow host placement changes");
+}
+
+#[test]
+fn indexed_wrap_neighbours_use_displayed_running_and_xref_text() {
+    for running in [true, false] {
+        let mut d = Document::new(&NewDocument { start_page: 99999, ..Default::default() });
+        let var = margin_running_definition(&mut d);
+        let (_, target) = d
+            .add_text_frame(
+                SpreadRef::Doc(0),
+                Rect::new(36.0, 600.0, 576.0, 750.0),
+                d.default_layer(),
+                "Running title",
+                ParaFormat { style: "Margin heading".into(), ..Default::default() },
+            )
+            .unwrap();
+        let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
+        d.xref_formats.push(designcraft_doc::XrefFormat { name: "Repeated page".into(), definition: "<pageNum /> ".repeat(16) });
+        let (_, neighbour) = d
+            .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 72.0, 136.0, 500.0), d.default_layer(), "See  reference\nAnchor", Default::default())
+            .unwrap();
+        if running {
+            d.story_mut(neighbour).unwrap().insert(4, &var.to_string());
+        } else {
+            d.story_mut(neighbour)
+                .unwrap()
+                .insert_xref(4, designcraft_doc::CrossRef { target: anchor, format: "Repeated page".into(), ..Default::default() });
+        }
+        let at = d.story(neighbour).unwrap().text.find("Anchor").unwrap();
+        anchor_box(&mut d, neighbour, at, 36.0, 0.0, true, WrapMode::BoundingBox);
+        let (_, recipient) = d
+            .add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), &LOREM.repeat(4), Default::default())
+            .unwrap();
+        let cache = Cache::new();
+        let displayed = cache.get(&d, neighbour, None);
+        let expected = crate::wrap::compose_among(&d, recipient, &Default::default(), &[&displayed]);
+        let before = cache.get(&d, recipient, None);
+        assert_eq!(line_layout(&before), line_layout(&expected), "running={running}: wrap must match the painted obstacle");
+        let context = ComposeOptions {
+            running: running.then(|| cache.running_index(&d)),
+            xrefs: (!running).then(|| cache.xref_index(&d)),
+            ..Default::default()
+        };
+        assert_eq!(
+            line_layout(&compose_story_unstacked(&d, recipient, &context)),
+            line_layout(&expected),
+            "raw composition must retain prebuilt neighbour context"
+        );
+        if running {
+            let st = d.story_mut(target).unwrap();
+            st.delete(0..st.len());
+            st.insert(0, "X");
+            st.paras[0].style = "Margin heading".into();
+        } else {
+            d.xref_formats.last_mut().unwrap().definition = "Short".into();
+        }
+        let fresh = Cache::new().get(&d, recipient, None);
+        assert_ne!(line_layout(&fresh), line_layout(&before), "fixture context edit must move the wrap");
+        assert_eq!(
+            line_layout(&cache.get(&d, recipient, None)),
+            line_layout(&fresh),
+            "running={running}: warm cache must follow neighbour text changes"
+        );
+    }
+}
+
+#[test]
 fn margin_footnote_columns_are_ignored() {
     let (mut d, sid, _) = doc_with("Body reference.", Rect::new(72.0, 72.0, 400.0, 600.0), ParaAttrs::default());
     d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 120.0 };
@@ -11760,4 +12657,47 @@ fn footnote_columns_follow_rtl_story_order() {
     assert_eq!(ns.len(), 4);
     assert!(ns[0].rect.x0 > ns[3].rect.x0);
     assert!(ns.windows(2).all(|w| w[0].index < w[1].index));
+}
+
+#[test]
+fn indexed_neighbour_wrap_follows_stacked_margin_note_hosts() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 20.0;
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 140.0 };
+    let var = margin_running_definition(&mut d);
+    let (_, earlier) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 300.0), d.default_layer(), "A", Default::default()).unwrap();
+    d.story_mut(earlier).unwrap().insert_note(1, &"Earlier\n".repeat(6), Default::default());
+    let text = format!("{var}One.\nTwo.\nThree.\nFour.\nFive.\nSix.");
+    let (embedded, neighbour) = anchored_text_frame(&mut d, &text, 100.0, 25.0);
+    let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 50.0, 136.0, 300.0), d.default_layer(), "B", Default::default()).unwrap();
+    d.story_mut(host).unwrap().insert_note(1, "Nested", Default::default());
+    Arc::make_mut(&mut d.story_mut(host).unwrap().notes[0]).text.insert_object(0, designcraft_doc::AnchoredObject::new(embedded, Default::default()));
+    let (continuation, empty) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), "", Default::default()).unwrap();
+    d.item_mut(continuation).unwrap().text_frame_mut().unwrap().story = neighbour;
+    d.stories.remove(&empty);
+    d.story_mut(neighbour).unwrap().frames.push(continuation);
+    d.story_mut(neighbour).unwrap().format_paras(0..text.len(), |p| p.para.grid_align = Some(GridAlign::AllLines));
+    anchor_box(&mut d, neighbour, text.find("Four.").unwrap(), 0.0, 0.0, true, WrapMode::BoundingBox);
+    let (_, recipient) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 500.0), d.default_layer(), &LOREM.repeat(4), Default::default()).unwrap();
+    let raw = compose_story_unstacked(&d, host, &Default::default());
+    let stacked = compose_story(&d, host, &Default::default());
+    assert!(stacked.frames[0].notes[0].origin.y > raw.frames[0].notes[0].origin.y + 60.0, "earlier note must displace the embedded host");
+    let cache = Cache::new();
+    let displayed = cache.get(&d, neighbour, None);
+    let expected = crate::wrap::compose_among(&d, recipient, &Default::default(), &[&displayed]);
+    let before = cache.get(&d, recipient, None);
+    assert_eq!(line_layout(&before), line_layout(&expected), "wrap must use the stacked host origin");
+    let note = Arc::make_mut(&mut d.story_mut(earlier).unwrap().notes[0]);
+    note.text.delete(0..note.text.len());
+    note.text.insert(0, "Earlier");
+    let fresh_cache = Cache::new();
+    let displayed_after = fresh_cache.get(&d, neighbour, None);
+    let expected_after = crate::wrap::compose_among(&d, recipient, &Default::default(), &[&displayed_after]);
+    assert_ne!(line_layout(&expected_after), line_layout(&expected), "fixture note edit must move the painted obstacle");
+    let fresh = fresh_cache.get(&d, recipient, None);
+    assert_eq!(line_layout(&fresh), line_layout(&expected_after), "wrap must follow the changed margin stack");
+    assert_eq!(line_layout(&cache.get(&d, recipient, None)), line_layout(&fresh), "warm recipient must follow the changed stack");
 }

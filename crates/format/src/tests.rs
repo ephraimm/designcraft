@@ -999,3 +999,22 @@ fn footnote_columns_native_roundtrip() {
     assert_eq!(restored.footnote_options.columns, 2);
     assert_eq!(restored.footnote_options.column_gutter, 17.0);
 }
+
+#[test]
+fn inset_columns_survive_native_roundtrip() {
+    let mut doc = Document::new(&NewDocument::default());
+    let (id, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 700.0), doc.default_layer(), "Main", Default::default()).unwrap();
+    doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns = Some(designcraft_doc::InsetColumns {
+        streams: vec![designcraft_doc::InsetStream { series: None, ratio: 2.0 }],
+        gutter: 12.0,
+        main_start_lines: 10,
+        main_start_baseline: Some(6),
+        main_left_inset: Some(210.0),
+        main_right_inset: Some(162.0),
+        catchwords: true,
+    });
+    let back = load(&save(&doc).unwrap()).unwrap();
+    assert_eq!(back.item(id).unwrap().text_frame().unwrap().options, doc.item(id).unwrap().text_frame().unwrap().options);
+    back.check().unwrap();
+}

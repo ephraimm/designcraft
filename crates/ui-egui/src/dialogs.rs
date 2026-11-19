@@ -5705,10 +5705,10 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             let pt = |k: &str| d.pt(k).map_or(Value::Null, |v| json!(v));
             let mut p = json!({
                 "style": d.s("style"), "startAt": d.n("startAt").unwrap_or(1.0).max(0.0) as u32, "restart": d.s("restart"),
-                "prefix": d.s("prefix"), "suffix": d.s("suffix"), "affixIn": d.s("affixIn"), "refPosition": d.s("refPosition"),
+                "prefix": d.s("prefix"), "suffix": d.s("suffix"), "affixIn": d.s("affixIn"), "bodyHidden": d.b("bodyHidden"), "refPosition": d.s("refPosition"),
                 "refCharStyle": d.s("refCharStyle"), "paraStyle": d.s("paraStyle"),
                 "separator": d.s("separator").replace("^t", "\t").replace("^m", "\u{2003}").replace("^>", "\u{2002}"),
-                "spaceBefore": pt("spaceBefore"), "spaceBetween": pt("spaceBetween"), "firstBaseline": d.s("firstBaseline"),
+                "spaceBefore": pt("spaceBefore"), "spaceBetween": pt("spaceBetween"), "runIn": d.b("runIn"), "runInSeparator": d.s("runInSeparator"), "firstBaseline": d.s("firstBaseline"),
                 "firstBaselineMin": pt("firstBaselineMin"), "spanColumns": d.b("spanColumns"),
                 "columns": columns, "columnGutter": column_gutter,
                 "rule": {"on": d.b("rule.on"), "weight": pt("rule.weight"), "color": d.s("rule.color"), "width": pt("rule.width"),
@@ -6936,6 +6936,12 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Body Size Multiplier:"));
+        let v = field_or(d, "p.dropCapScale", &pv["dropCapScale"]).as_f64();
+        if let Some(n) = crate::widgets::number(ui, "psdropCapScale", v, "", 60.0, 2) {
+            d.fields.insert("p.dropCapScale".into(), json!(n.clamp(0.0, 20.0)));
+        }
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Character Style:"));
         let style = field_or(d, "p.dropCapStyle", &pv["dropCapStyle"]).as_str().unwrap_or("").to_string();
         let style = if style.is_empty() { designcraft_doc::NO_CHAR_STYLE.to_string() } else { style };
@@ -6951,6 +6957,10 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             });
         ui.end_row();
     });
+    // Characters stays stored, so setting Words back to 0 restores it.
+    if field_or(d, "p.dropCapWords", &pv["dropCapWords"]).as_u64().unwrap_or(0) > 0 {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Words overrides Characters. Set Words to 0 to use Characters.")).weak());
+    }
     for (label, key) in
         [("Align Left Edge", "dropCapAlignLeft"), ("Scale for Descenders", "dropCapScaleDescenders"), ("Keep Size", "dropCapKeepSize")]
     {
@@ -8882,6 +8892,14 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             text_field(ui, d, "columnGutter", 70.0);
             ui.end_row();
         });
+        let mut run_in = d.b("runIn");
+        if ui.checkbox(&mut run_in, "Run notes into the preceding paragraph").changed() {
+            d.fields.insert("runIn".into(), json!(run_in));
+        }
+        ui.horizontal(|ui| {
+            ui.label("Run-in separator:");
+            text_field(ui, d, "runInSeparator", 100.0);
+        });
         head(ui, "First Baseline");
         egui::Grid::new("fn_fb").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Offset:"));
@@ -9005,6 +9023,7 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         text_field(ui, d, "separator", 60.0);
         ui.end_row();
     });
+    check(ui, d, "bodyHidden", crate::i18n::tr(&app.ui.language, "Hide Number in Note Text"));
 }
 
 /// One parameter of a command, parsed from its params documentation

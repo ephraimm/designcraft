@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn footnote_dialog_applies_body_hidden() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut params = serde_json::to_value(&app.session.doc().unwrap().doc.footnote_options).unwrap();
+    params["bodyHidden"] = json!(true);
+    app.ui.dialog = Some(Dialog::new("footnoteOptions", params));
+    confirm(&mut app).unwrap();
+    assert_eq!(app.run("footnote.options", json!({})).unwrap()["bodyHidden"], true);
+}
+
+#[test]
 fn paragraph_style_settings_show_captured_color_and_pending_spacing_without_changing_the_document() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();

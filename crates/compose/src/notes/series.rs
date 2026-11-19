@@ -84,11 +84,11 @@ impl Notes {
     }
 
     pub fn streams_fit(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], out: &ComposedStory, opts: &ComposeOptions) -> bool {
-        self.streams.fits(doc, column, extra, out, opts)
+        opts.inset_measure || self.streams.fits(doc, column, extra, out, opts)
     }
 
     pub fn finish_streams(&self, doc: &Document, story: &Story, opts: &ComposeOptions, out: &mut ComposedStory) {
-        if !self.nested {
+        if !self.nested && !opts.inset_measure {
             self.streams.finish(doc, story, opts, out);
         }
     }
@@ -182,6 +182,11 @@ impl Notes {
         available: f64,
         opts: &ComposeOptions,
     ) -> Option<SplitPlan> {
+        // A rewind preserves the space needed by a later spanning stack. Splitting a local
+        // note must not admit a body line into that space before the stack is replayed.
+        if available + 0.01 < self.floor.get(&column.frame_index).copied().unwrap_or(0.0) {
+            return None;
+        }
         let (total, reserves) = self.reservations(doc, column, extra, &[], opts);
         // Split the last series needing room. Others must fit intact before it.
         for i in (0..self.series.len()).rev() {
@@ -215,7 +220,10 @@ impl Notes {
     }
 
     pub fn place_line(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], plan: Option<SplitPlan>, opts: &ComposeOptions) -> bool {
-        self.streams.place_line();
+        // Carry-only placement must not accept the staged main line's stream references.
+        if !extra.is_empty() {
+            self.streams.place_line();
+        }
         let mut plans = plan.map_or_else(Vec::new, |p| p.0);
         let mut placed = false;
         for i in 0..self.series.len() {
@@ -304,6 +312,7 @@ impl Notes {
         }
         refs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.5.cmp(&b.5)));
         let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
+        let mut previous_margin: HashMap<(usize, bool), (usize, usize, Arc<ComposedStory>, f64, usize)> = HashMap::new();
         let mut seen = HashSet::new();
         for (page_index, _, fi, li, si, k) in refs {
             if !seen.insert((si, k)) {
@@ -324,11 +333,23 @@ impl Notes {
                     MarginSide::Inside => !f.left_page,
                     MarginSide::Outside => f.left_page,
                 };
-                let (text, m) = s.compose(doc, k, width, f, opts);
+                let previous = previous_margin.get(&(page_index, left)).filter(|(prev_si, _, _, _, prev_fi)| *prev_si == si && *prev_fi == fi);
+                let run = s.run_in(doc, k, width, previous.map(|(_, pk, text, _, _)| (*pk, text.as_ref())));
+                let column = NoteColumn { frame_index: fi, column_index: 0, width, frame: f };
+                let (mut text, mut m) = s.compose_with_run(doc, k, column, opts, run.as_ref());
+                let joined_y = previous.zip(run.as_ref()).map(|((_, _, _, last, _), _)| last + o.space_between + m.lead - m.first);
+                // The reference baseline is a hard placement floor, including a run-in first line.
+                let joined_y = joined_y.filter(|y| y + m.first + 0.01 >= baseline);
+                if run.is_some() && joined_y.is_none() {
+                    (text, m) = s.compose(doc, k, width, f, opts);
+                }
                 let requested = baseline - m.first;
-                let y = bottoms.get(&(page_index, left)).map_or(requested, |bottom| requested.max(bottom + page.y0 + o.space_between));
+                let y = joined_y.unwrap_or_else(|| {
+                    bottoms.get(&(page_index, left)).map_or(requested, |bottom| requested.max(bottom + page.y0 + o.space_between))
+                });
                 let bottom = y + m.last + m.descent;
                 bottoms.insert((page_index, left), bottom - page.y0);
+                previous_margin.insert((page_index, left), (si, m.owner, text.clone(), y + m.last, fi));
                 let edge = doc.item(f.id).and_then(|item| item.path.bounds()).unwrap_or(f.area);
                 let x = if left { edge.x0 - gap - width } else { edge.x1 + gap };
                 let overflow = bottom > margin.y1 + 0.01;
@@ -342,20 +363,23 @@ impl Notes {
                     ));
                 }
                 let column = out.frames[fi].lines[li].column;
-                out.frames[fi].notes.push(PlacedNote {
-                    id: note.id,
-                    index: k,
-                    series: s.series,
-                    reference_baseline: baseline,
-                    overflow,
-                    column,
-                    label: o.label(s.numbers[k], true),
-                    origin: Point::new(x, y),
-                    rect: Rect::new(x, y, x + width, bottom),
-                    text,
-                    source: Arc::from(note.text.text.as_str()),
-                    note: Arc::clone(note),
-                });
+                super::append_note(
+                    &mut out.frames[fi].notes,
+                    PlacedNote {
+                        id: note.id,
+                        index: k,
+                        series: s.series,
+                        reference_baseline: baseline,
+                        overflow,
+                        column,
+                        label: o.label(s.numbers[k], true),
+                        origin: Point::new(x, y),
+                        rect: Rect::new(x, y, x + width, bottom),
+                        text,
+                        source: Arc::from(note.text.text.as_str()),
+                        note: Arc::clone(note),
+                    },
+                );
             } else {
                 for ft in &mut out.frames {
                     for n in ft.notes.iter_mut().filter(|n| n.id == story.notes[k].id && n.series == s.series) {
@@ -364,5 +388,74 @@ impl Notes {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_column_foot_placement_does_not_accept_a_stream_anchor() {
+        let mut doc = Document::new(&Default::default());
+        let (_, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 300.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        let (route, _) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(270.0, 36.0, 490.0, 300.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.footnote_options.placement = NotePlacement::Stream;
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: sid, series: 0 });
+        doc.story_mut(sid).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
+        let story = doc.story(sid).unwrap();
+        let frames = crate::frame_specs(&doc, sid);
+        let frame = &frames[0];
+        let column = NoteColumn { frame_index: 0, column_index: 0, width: frame.columns()[0].width(), frame };
+        let opts = ComposeOptions::default();
+        let mut notes = Notes::continuing(&doc, story, &frames, None);
+        let mut out = ComposedStory::default();
+        assert!(notes.streams_fit(&doc, column, &[0], &out, &opts));
+        notes.place_line(&doc, column, &[], None, &opts);
+        notes.finish_streams(&doc, story, &opts, &mut out);
+        assert!(out.frames.iter().all(|f| f.notes.is_empty()), "no main reference was accepted");
+    }
+
+    #[test]
+    fn split_plan_keeps_the_spanning_floor_after_a_rewind() {
+        let mut doc = Document::new(&Default::default());
+        let (fid, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(36.0, 36.0, 436.0, 436.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        doc.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        doc.note_series.push(designcraft_doc::NoteSeries {
+            id: 1,
+            name: "Spanning".into(),
+            options: designcraft_doc::FootnoteOptions { span_columns: true, space_before: 70.0, allow_split: true, ..Default::default() },
+        });
+        let story = doc.story_mut(sid).unwrap();
+        let span = story.insert_note(0, "Spanning", Default::default()).unwrap();
+        story.note_mut(span).unwrap().series = 1;
+        story.insert_note(story.len(), "Local\nLocal\nLocal\nLocal", Default::default());
+        let story = doc.story(sid).unwrap();
+        let frames = crate::frame_specs(&doc, sid);
+        let frame = &frames[0];
+        let cols = frame.columns();
+        let opts = ComposeOptions::default();
+        let mut notes = Notes::continuing(&doc, story, &frames, None);
+        let snapshot = notes.snapshot();
+        let column = NoteColumn { frame_index: 0, column_index: 1, width: cols[1].width(), frame };
+        assert!(notes.place_line(&doc, column, &[0], None, &opts));
+        let floor = notes.reserve(&doc, column, &[], &opts);
+        let local = NoteColumn { column_index: 0, ..column };
+        // A late local reference fits its own stack, but not the later spanning reservation.
+        let available = floor - 10.0;
+        let mut line = crate::compose_story(&doc, sid, &opts).frames[0].lines[0].clone();
+        line.column = 0;
+        line.baseline = cols[0].y1 - available - line.descent;
+        assert!(notes.earlier_columns_collide(&[line], 0, 1, &cols, floor));
+        notes.restore(&snapshot);
+        assert!(notes.reserve(&doc, local, &[1], &opts) >= floor);
+        assert!(notes.split_plan(&doc, local, &[1], available, &opts).is_none());
+        assert!(notes.split_plan(&doc, local, &[1], floor + 10.0, &opts).is_some());
     }
 }
