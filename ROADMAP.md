@@ -33,6 +33,7 @@
 - 2026-11-19: `dropCapOffset` moves the drop word in line-pitch units without changing body baselines or indents; IDML export warns about word-drop and offset losses (#1930).
 
 - #1930: Drop Cap Body Size Multiplier sets a fixed ratio independently of character-style size; Keep Size indentation follows the cap's shifted ink bounds, with Lines as an upper bound. Footnotes reserve overhanging drop-cap ink so a short note cannot overprint the next note.
+- 2026-11-19: repeated table-footer footnotes number on their first emitted page, preserving the final body page's counter for following notes (#2612).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-11-16: a long footnote continues at the foot of the next column or frame; Allow Split Footnotes (IDML `NoSplitting`) turns it off (#1941).
