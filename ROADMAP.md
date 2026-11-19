@@ -11,6 +11,8 @@
 - **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).
 
 - **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.
+- **2026-11-19** · Run-in notes build on inset-column layout; delayed main starts count shared physical baselines once. IDML warns when effective run-in notes become separate footnotes.
+
 - **2026-11-19** · Hidden run-in note bodies retain their join separator without numbers in column feet and stream frames.
 
 - **2026-11-19** · Run-in note series and per-note overrides continue comments in one paragraph while retaining anchors, split ranges and editing addresses. Margin reference baselines take precedence. See [run-in notes](docs/run-in-notes.md).

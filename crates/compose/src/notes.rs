@@ -795,12 +795,12 @@ impl SeriesNotes {
                     exclusions,
                     continuations: self.part_continuations(k, &heights, opts.note_bands).into_iter().filter(|(index, _)| *index <= part).collect(),
                     remainder: parts.get(heights.len()).is_some_and(Option::is_some),
-                    run_in,
                     k,
                     heights,
                     pages,
                     text,
                     m,
+                    run_in,
                 });
             }
             let smaller = h.min(m.last - 0.02);
