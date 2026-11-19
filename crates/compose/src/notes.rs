@@ -802,6 +802,11 @@ impl SeriesNotes {
         None
     }
 
+    /// Whether every referenced footnote composes completely at this column's width.
+    pub fn fit(&mut self, doc: &Document, column: NoteColumn<'_>, ks: &[usize], opts: &ComposeOptions) -> bool {
+        ks.iter().all(|&k| self.compose(doc, k, column.width, column.frame, opts).0.overset_at.is_none())
+    }
+
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
     pub fn reserve(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> f64 {
         self.reserve_metrics(doc, column, extra, &[], opts)

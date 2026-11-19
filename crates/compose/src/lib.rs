@@ -1932,6 +1932,7 @@ enum LinePlacement {
 }
 
 struct PositionLineInput<'a, 'font> {
+    cap_indent: Option<f64>,
     frame: &'a FrameSpec,
     column: Rect,
     glyphs: &'a [Glyph],
@@ -1975,6 +1976,7 @@ struct LinePosition {
 
 fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
     let PositionLineInput {
+        cap_indent,
         frame: f,
         column: col,
         glyphs,
@@ -2008,7 +2010,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         last_line_mark,
     } = input;
     let (mut x0, mut x1) = (col.x0, col.x1);
-    let ind = pp.left_indent + pp.right_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 };
+    let ind = pp.left_indent + pp.right_indent + if line_no == 0 { cap_indent.unwrap_or(pp.first_line_indent) } else { 0.0 };
     let need = if f.exclusions.is_empty() && f.outline.is_none() {
         0.0
     } else {
@@ -2253,11 +2255,13 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
     let streams_fit = notes.streams_fit(doc, note_column, &line_notes, out, opts);
+    let notes_fit = notes.fit(doc, note_column, &line_notes, opts);
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     // A note that doesn't fit whole splits, keeping its first part with this line. Without a
     // split, a column's first line is set even when its own notes don't fit (as before).
     if !capped
         && streams_fit
+        && notes_fit
         && baseline + desc > col.y1 - reserve + 0.01
         && let Some(plan) = notes.split_plan(doc, note_column, &line_notes, col.y1 - (baseline + desc), opts)
     {
@@ -2270,7 +2274,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         } else {
             0.0
         };
-    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped && streams_fit;
+    let fits = notes_fit && streams_fit && baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
     if !fits
         && !pp.hyph_across_column
         && line_no > col_first_line
@@ -2630,6 +2634,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let (reference, model) = cjk_line_reference(line_glyphs);
             let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
             let position = position_line(PositionLineInput {
+                cap_indent: beside_cap.filter(|_| line_no == 0).map(|dc| dc.indent()),
                 frame: f,
                 column: col,
                 glyphs,
@@ -2666,6 +2671,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             // An oversized cap cannot start here; try the next column before placing any text.
             if drop_cap.filter(|_| line_no == 0).is_some_and(|dc| dc.indent() > x1 - x0 - pp.left_indent - pp.right_indent) {
                 advance_placement_column(cur, spanning, cols);
+                carry.clear();
                 moved = true;
                 break;
             }

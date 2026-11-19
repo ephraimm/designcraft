@@ -87,6 +87,18 @@ impl Notes {
         opts.inset_measure || self.streams.fits(doc, column, extra, out, opts)
     }
 
+    /// Whether every referenced foot note can be composed at all at its series' width; an unplaceable note oversets its parent line.
+    pub fn fit(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> bool {
+        (0..self.series.len()).all(|i| {
+            if !self.at_foot(doc, i) {
+                return true;
+            }
+            let s = &mut self.series[i];
+            let own: Vec<_> = extra.iter().copied().filter(|k| s.owns(*k)).collect();
+            s.fit(doc, s.column(column), &own, opts)
+        })
+    }
+
     pub fn finish_streams(&self, doc: &Document, story: &Story, opts: &ComposeOptions, out: &mut ComposedStory) {
         if !self.nested && !opts.inset_measure {
             self.streams.finish(doc, story, opts, out);
