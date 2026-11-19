@@ -144,6 +144,33 @@ fn standalone_route_beside_inset_reports_unplaced_tail_as_overset() {
 }
 
 #[test]
+fn main_start_counts_shared_run_in_baselines_once() {
+    let (mut doc, sid) = document(1, &"Main words. ".repeat(30), &"Commentary words. ".repeat(90), &"Outside words. ".repeat(90));
+    doc.note_series[0].options.run_in = true;
+    doc.note_series[0].options.body_hidden = true;
+    let story = doc.story_mut(sid).unwrap();
+    let id = story.insert_note(0, "Short.", Default::default()).unwrap();
+    let note = story.note_mut(id).unwrap();
+    note.series = 1;
+    note.text.format_chars(0..6, |f| {
+        f.over.size = Some(9.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(11.0));
+    });
+    let mut frames = frame_specs(&doc, sid);
+    frames[0].opts.inset_columns.as_mut().unwrap().main_start_baseline = Some(6);
+    let cs = compose(&doc, doc.story(sid).unwrap(), &frames, &Default::default());
+    let mut baselines: Vec<_> = cs.frames[0]
+        .notes
+        .iter()
+        .filter(|n| n.series == 1)
+        .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| n.origin.y + l.baseline)))
+        .collect();
+    baselines.sort_by(f64::total_cmp);
+    baselines.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+    assert!((cs.frames[0].lines[0].baseline - baselines[5]).abs() < 0.01);
+}
+
+#[test]
 fn main_start_matches_sixth_commentary_baseline_with_different_leading() {
     let (doc, sid) = document(1, &"Main words. ".repeat(30), &"Commentary words. ".repeat(90), &"Outside words. ".repeat(90));
     let mut frames = frame_specs(&doc, sid);

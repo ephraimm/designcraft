@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: private combined proof reconciles run-in note hit areas, counts shared commentary baselines once, and retains a feasible full-page inset trial before bounded search (14-S2G). Integration fixes remain local pending feature-branch review.
+
 - **2026-11-19** · Run-in note series and per-note overrides continue comments in one paragraph while retaining anchors, split ranges and editing addresses. Margin reference baselines take precedence. See [run-in notes](docs/run-in-notes.md).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)

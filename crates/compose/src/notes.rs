@@ -813,7 +813,7 @@ impl SeriesNotes {
                     None => (top + p.m.top_padding(), top),
                     Some((last, bottom, metrics)) => {
                         let first = last + o.space_between + metrics.advance_to(p.m);
-                        (first - p.m.first, (bottom + o.space_between).min(first))
+                        (first - p.m.first, if p.m.lead <= 0.0 { first - p.m.ascent } else { (bottom + o.space_between).min(first) })
                     }
                 };
                 let y1 = y + p.m.last + p.m.descent;

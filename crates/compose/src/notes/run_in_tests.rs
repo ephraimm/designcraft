@@ -28,18 +28,22 @@ fn baseline(n: &PlacedNote) -> f64 {
 #[test]
 fn hidden_run_in_body_keeps_separator_without_numbers() {
     for placement in [NotePlacement::ColumnFoot, NotePlacement::Stream] {
-        let (mut doc, sid) = sample(placement);
+        let (mut doc, sid) = sample(placement.clone());
         doc.footnote_options.body_hidden = true;
         doc.footnote_options.ref_hidden = true;
         doc.footnote_options.run_in_separator = " | ".into();
-        let cs = crate::compose_story(&doc, sid, &Default::default());
-        if placement == NotePlacement::ColumnFoot {
-            let ns = notes(&cs);
-            let text: String =
-                ns.iter().flat_map(|n| n.text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs)).map(|g| g.rendered_char).collect();
-            assert!(text.contains('|'), "{text}");
-            assert!(!text.chars().any(|c| c.is_ascii_digit()), "{text}");
+        if placement == NotePlacement::Stream {
+            let (route, _) =
+                doc.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 580.0, 450.0), doc.default_layer(), "", Default::default()).unwrap();
+            doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: sid, series: 0 });
         }
+        let cs = crate::compose_story(&doc, sid, &Default::default());
+        let ns = notes(&cs);
+        assert_eq!(ns.len(), 3);
+        let text: String =
+            ns.iter().flat_map(|n| n.text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs)).map(|g| g.rendered_char).collect();
+        assert!(text.contains('|'), "{text}");
+        assert!(!text.chars().any(|c| c.is_ascii_digit()), "{text}");
     }
 }
 

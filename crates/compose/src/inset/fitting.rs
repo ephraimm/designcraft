@@ -125,6 +125,21 @@ fn search<T>(
     let (mut lo, mut hi) = (0, keys.len());
     let mut best: Option<(usize, T)> = None;
     let mut used = 0;
+    // Widening and run-in joins make feasibility nonmonotone. Keep a full-page
+    // success before a failed midpoint can exclude it from the bounded search.
+    if budget > 0
+        && let Some(&key) = keys.last()
+    {
+        let (cut, feasible, trial) = probe(key)?;
+        used += 1;
+        hi = hi.saturating_sub(1);
+        if feasible {
+            if cut == key {
+                return Ok((Some(trial), used));
+            }
+            best = Some((cut, trial));
+        }
+    }
     while lo < hi && used < budget {
         let mid = lo + (hi - lo) / 2;
         let Some(&key) = keys.get(mid) else { break };
@@ -258,12 +273,15 @@ impl Page<'_> {
                     &ComposeOptions { note_bands: true, ..self.opts.clone() },
                     Some(series),
                 );
-                let lines: Vec<_> = fit
+                let mut lines: Vec<_> = fit
                     .frames
                     .iter()
                     .flat_map(|f| &f.notes)
                     .flat_map(|note| note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| (note.origin.y + l.baseline, l.leading))))
                     .collect();
+                // Run-in notes share a physical baseline; each line counts once.
+                lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+                lines.dedup_by(|a, b| (a.0 - b.0).abs() < 0.01);
                 if let Some(&(baseline, leading)) = lines.get(n.saturating_sub(1) as usize).or_else(|| lines.first()) {
                     let baseline = if lines.get(n.saturating_sub(1) as usize).is_some() {
                         baseline
@@ -839,6 +857,11 @@ pub(crate) fn compose_frames(
 #[cfg(test)]
 mod search_tests {
     use super::*;
+    #[test]
+    fn full_page_fit_survives_a_run_in_feasibility_hole() {
+        let (best, _) = search(&[1, 2, 3, 4, 5], 4, |key| Ok((key, key == 1 || key == 5, key))).unwrap();
+        assert_eq!(best, Some(5));
+    }
     #[test]
     fn catchword_row_is_committed_once_and_can_wait_for_a_wider_band() {
         let short = Rect::new(0.0, 0.0, 100.0, 10.0);
