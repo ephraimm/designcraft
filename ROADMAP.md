@@ -9,6 +9,13 @@
 - 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).
 
 - 2026-11-19: each note series has an independent `catchwordContinuation`, with command validation, native persistence and an IDML loss warning. Story continuation remains main-stream-only (#2869).
+- 2026-11-20: routed catchwords require `noteStream.catchword:true` on the route frame; the flag defaults to false, survives native saves and warns on IDML loss (#2873).
+
+- 2026-11-20: styled catchword rows use the character style's leading exactly; boolean catchwords retain the 9/12 pt type and 18 pt row defaults (#2873).
+
+- 2026-11-20: catchword glyphs keep their requested size when leading is small; only width fitting can shrink them (#2873).
+
+- 2026-11-20: routed catchwords follow their last composed line, and chained followers clear that row rather than the route frame's unused height (#2873).
 - 2026-11-19: routed series generate catchwords in their last route frame on a continuing page. Inset followers clear every stream's catchword row; page revisits and copied follower chains preserve routed output (#2873).
 
 - 2026-11-19: inset catchwords accept a character style and reserve rows proportional to its leading, with native persistence and an IDML loss warning (#2873).
