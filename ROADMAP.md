@@ -58,6 +58,8 @@
 - **2026-11-19** · Hidden run-in note bodies retain their join separator without numbers in column feet and stream frames.
 
 - **2026-11-19** · Run-in note series and per-note overrides continue comments in one paragraph while retaining anchors, split ranges and editing addresses. Margin reference baselines take precedence. See [run-in notes](docs/run-in-notes.md).
+- **2026-11-20** · Commentary replay retains disjoint visits when a text thread returns to a page, so each comment appears once on its anchor page (#2872).
+
 - **2026-11-18** · Note series can hide the body number and separator with `bodyHidden`, independently of the reference (#2872). Native files retain the option; IDML warns before restoring ordinary footnote labels.
 - 2026-11-19: footnote part ranges stop at nested overset text, including an unplaceable drop word after a fitting paragraph (#1941).
 

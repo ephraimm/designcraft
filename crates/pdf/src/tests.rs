@@ -710,6 +710,51 @@ fn exports_embedded_text_from_footnotes() {
 }
 
 #[test]
+fn commentary_on_a_return_visit_exports_once_on_its_anchor_page() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Stream;
+    d.footnote_options.ref_hidden = true;
+    let body = format!("First.{}Middle.{}Last.", designcraft_doc::story::FRAME_BREAK, designcraft_doc::story::FRAME_BREAK);
+    let mut host = None;
+    let mut previous = None;
+    for (visit, page) in [0, 1, 0].into_iter().enumerate() {
+        let y = if visit == 2 { 400.0 } else { 36.0 };
+        let (frame, sid) = d
+            .add_text_frame(
+                SpreadRef::Doc(page),
+                Rect::new(36.0, y, 280.0, y + 160.0),
+                d.default_layer(),
+                if visit == 0 { &body } else { "" },
+                Default::default(),
+            )
+            .unwrap();
+        host.get_or_insert(sid);
+        if let Some(last) = previous {
+            d.thread(last, frame).unwrap();
+        }
+        previous = Some(frame);
+    }
+    let host = host.unwrap();
+    for page in 0..2 {
+        let (route, _) =
+            d.add_text_frame(SpreadRef::Doc(page), Rect::new(300.0, 36.0, 540.0, 336.0), d.default_layer(), "", Default::default()).unwrap();
+        d.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: host, series: 0 });
+    }
+    let story = d.story_mut(host).unwrap();
+    for (word, comment) in [("Last.", "CommentC"), ("Middle.", "CommentB"), ("First.", "CommentA")] {
+        let at = story.text.find(word).unwrap() + word.len();
+        story.insert_note(at, comment, Default::default()).unwrap();
+    }
+    d.check().unwrap();
+    let pages = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+    assert_eq!(pages.len(), 2);
+    for (comment, page) in [("CommentA", 0), ("CommentB", 1), ("CommentC", 0)] {
+        assert_eq!(pages.iter().map(|text| text.matches(comment).count()).sum::<usize>(), 1, "{comment}: {pages:?}");
+        assert!(pages[page].contains(comment), "{comment}: {pages:?}");
+    }
+}
+
+#[test]
 fn fills_open_contours_without_changing_strokes() {
     let mut d = Document::new(&NewDocument::default());
     add_box(&mut d, Rect::new(40.0, 50.0, 62.0, 67.0), designcraft_color::swatch::BLACK);

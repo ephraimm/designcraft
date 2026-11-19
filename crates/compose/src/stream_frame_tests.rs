@@ -64,6 +64,34 @@ fn check_starts(doc: &Document, host: StoryId, cs: &ComposedStory) {
 }
 
 #[test]
+fn returning_to_a_page_places_each_comment_only_on_its_anchor_page() {
+    let (mut doc, host, streams) = commentary(2, 0, 300.0);
+    let second = doc.story(host).unwrap().frames[1];
+    let (third, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 400.0, 280.0, 600.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.thread(second, third).unwrap();
+    let body = format!("First.{}Middle.{}Last.", designcraft_doc::story::FRAME_BREAK, designcraft_doc::story::FRAME_BREAK);
+    let story = doc.story_mut(host).unwrap();
+    story.insert(0, &body);
+    for word in ["Last.", "Middle.", "First."] {
+        let at = story.text.find(word).unwrap() + word.len();
+        let id = story.insert_note(at, word, Default::default()).unwrap();
+        story.note_mut(id).unwrap().series = 1;
+    }
+    assert_eq!(frame_specs(&doc, host).iter().map(|f| f.page).collect::<Vec<_>>(), [Some(0), Some(1), Some(0)]);
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(!cs.is_overset());
+    assert!(cs.warnings.is_empty(), "{:?}", cs.warnings);
+    assert_eq!(cs.frames.iter().flat_map(|f| &f.notes).count(), 3, "each of the three comments must appear exactly once");
+    check_starts(&doc, host, &cs);
+    let notes = &doc.story(host).unwrap().notes;
+    for (index, stream) in [(0, streams[0]), (1, streams[1]), (2, streams[0])] {
+        let placements: Vec<_> = cs.frames.iter().filter(|f| f.notes.iter().any(|n| n.id == notes[index].id)).map(|f| f.frame).collect();
+        assert_eq!(placements, [stream]);
+    }
+}
+
+#[test]
 fn ten_comment_starts_follow_anchor_pages_and_reflow_after_an_edit() {
     let (mut doc, host, streams) = commentary(3, 10, 135.0);
     let cs = compose_story(&doc, host, &Default::default());
@@ -220,14 +248,19 @@ fn page_trials_do_not_consume_a_rejected_cut() {
     let full = fit_stream_page(
         &doc,
         story,
-        StreamPageInput { page: 0, main: 0..story.len(), areas: &areas, force_starts: None },
+        StreamPageInput { page: 0, main: std::iter::once(0..story.len()).collect(), areas: &areas, force_starts: vec![] },
         &before,
         &Default::default(),
     );
     assert!(!full.starts_fit);
     let end = story.note_anchor(story.notes[1].id).unwrap();
-    let short =
-        fit_stream_page(&doc, story, StreamPageInput { page: 0, main: 0..end, areas: &areas, force_starts: None }, &before, &Default::default());
+    let short = fit_stream_page(
+        &doc,
+        story,
+        StreamPageInput { page: 0, main: std::iter::once(0..end).collect(), areas: &areas, force_starts: vec![] },
+        &before,
+        &Default::default(),
+    );
     assert!(short.starts_fit);
     assert_eq!(short.frames.iter().flat_map(|f| &f.notes).count(), 1);
     assert_eq!(before.pending_series().count(), 0);

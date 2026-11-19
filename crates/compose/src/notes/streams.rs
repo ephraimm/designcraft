@@ -62,13 +62,13 @@ fn respects_keeps(plan: &super::SplitPlan) -> bool {
 
 pub struct StreamPageInput<'a> {
     pub page: usize,
-    /// Bytes of main text actually placed by the caller's candidate page layout.
-    pub main: Range<usize>,
+    /// Disjoint main-text ranges actually placed by the caller's candidate page layout.
+    pub main: Vec<Range<usize>>,
     /// This page's stream areas, each naming its host and series in `note_stream`.
     pub areas: &'a [FrameSpec],
     /// The page's first main line, when progress needs an impossible comment to overflow.
-    /// Only anchors in this range may overflow instead of moving through every later page.
-    pub force_starts: Option<Range<usize>>,
+    /// Only anchors in these ranges may overflow instead of moving through every later page.
+    pub force_starts: Vec<Range<usize>>,
 }
 
 pub struct StreamPageFit {
@@ -97,7 +97,7 @@ pub(crate) fn fit_stream_page_for(
     opts: &ComposeOptions,
     only: Option<u64>,
 ) -> StreamPageFit {
-    let ranges = [input.main.clone()];
+    let ranges = input.main.clone();
     fit_stream_page_ranges(doc, story, input, before, opts, only, &ranges)
 }
 
@@ -378,8 +378,9 @@ impl StreamComposer {
         let mut fits = Vec::new();
         for page in pages.into_iter().filter(|p| until.is_none_or(|limit| *p <= limit)) {
             let ranges: Vec<_> = anchors.iter().filter(|a| a.page == page).collect();
-            let main = ranges.iter().map(|a| a.range.clone()).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end)).unwrap_or(0..0);
-            let force_starts = ranges.iter().filter(|a| a.forced).map(|a| a.range.clone()).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end));
+            // A thread can leave this page and return; the bytes between visits belong elsewhere.
+            let main = ranges.iter().map(|a| a.range.clone()).collect();
+            let force_starts = ranges.iter().filter(|a| a.forced).map(|a| a.range.clone()).collect();
             let areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
             let fit = fit_stream_page(doc, story, StreamPageInput { page, main, areas: &areas, force_starts }, &state, opts);
             state = fit.state.clone();
