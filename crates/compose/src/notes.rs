@@ -813,8 +813,13 @@ impl SeriesNotes {
     }
 
     /// Whether every referenced footnote composes completely at this column's width.
+    /// A note with text but no placed part (nothing fits, e.g. a drop word wider than the column)
+    /// is unplaceable too: `compose` would hide that behind an empty default story.
     pub fn fit(&mut self, doc: &Document, column: NoteColumn<'_>, ks: &[usize], opts: &ComposeOptions) -> bool {
-        ks.iter().all(|&k| self.compose(doc, k, column.width, column.frame, opts).0.overset_at.is_none())
+        ks.iter().all(|&k| match self.compose_parts(doc, k, column.width, column.frame, opts, &[], &[]).first() {
+            Some(Some((text, _))) => text.overset_at.is_none(),
+            _ => self.notes.get(k).is_none_or(|n| n.text.len() == 0),
+        })
     }
 
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.

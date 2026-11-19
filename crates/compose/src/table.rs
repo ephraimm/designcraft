@@ -238,7 +238,7 @@ pub(crate) fn place_table(
         return false;
     }
     let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
-    let mut col = col_rect(cur);
+    let col = col_rect(cur);
     // Column widths: scaled to fit the measure.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
     let natural = table.width();
@@ -528,6 +528,53 @@ pub(crate) fn place_table(
         row_page = placed_page;
     }
     true
+}
+
+/// Start Row: where a row must begin, unless it already begins there: at the top of a column
+/// (`at_top`) for Next Column, and of the frame, the page, or a page of that parity for the others.
+fn row_start(start: StartParagraph, at_top: bool, cur: &Cursor, frames: &[FrameSpec], doc: &Document) -> Option<StartParagraph> {
+    let page = |fi: usize| frames.get(fi).and_then(|f| f.page);
+    let frame_top = at_top && cur.col == 0;
+    let page_top = frame_top && (cur.fi == 0 || page(cur.fi).is_none() || page(cur.fi - 1) != page(cur.fi));
+    let odd = page(cur.fi).map(|p| doc.page_number(p) % 2 == 1);
+    let there = match start {
+        StartParagraph::Anywhere => true,
+        StartParagraph::NextColumn => at_top,
+        StartParagraph::NextFrame => frame_top,
+        StartParagraph::NextPage => page_top,
+        StartParagraph::NextOddPage => page_top && odd != Some(false),
+        StartParagraph::NextEvenPage => page_top && odd != Some(true),
+    };
+    (!there).then_some(start)
+}
+
+/// The end of the rows placed together from row `r`: the rows kept with it (`kept`) when they
+/// fit `room` (an empty column's), else those its merged cells hold together (`held`). Rows of a
+/// kept run that can't fit then all break as if not kept (up to `loose`), as in InDesign: the
+/// run fills the column rather than moving its later rows on.
+fn next_group(heights: &[f64], r: usize, (kept, held): (usize, usize), room: f64, loose: &mut usize) -> usize {
+    let (kept, held) = (kept.max(r + 1), held.max(r + 1));
+    if r >= *loose && heights[r..kept].iter().sum::<f64>() <= room + 0.01 {
+        return kept;
+    }
+    *loose = (*loose).max(kept);
+    held
+}
+
+/// Keep with Next Row: where each row's group ends when the rows kept with the next stay with
+/// it (`group_end`: the groups merged cells hold together). A row moves on to the next column
+/// only with the rows after it; unlike merged cells, InDesign lets go of the keep when the rows
+/// can't fit an empty column.
+fn keep_groups(table: &Table, group_end: &[usize], body_end: usize) -> Vec<usize> {
+    let mut keep_end = group_end.to_vec();
+    for r in (0..body_end).rev() {
+        let e = group_end[r];
+        // A row with a start option ends the kept run before it, so it can start where it asks.
+        if e < body_end && table.rows[e - 1].keep_with_next && table.rows[e].start == StartParagraph::Anywhere {
+            keep_end[r] = keep_end[e];
+        }
+    }
+    keep_end
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
