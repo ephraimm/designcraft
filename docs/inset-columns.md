@@ -90,6 +90,10 @@ earlier in this fit. Missing frames, other pages or stories, later frames and cy
 the entire follow adjustment a no-op with a composition warning. Native saves preserve
 `after`; IDML warns that it loses this dependency along with the follow geometry.
 
+Each physical page's routes are fitted once using all host ranges on that page, including
+a thread that returns to an earlier page. Chained followers use already fitted route bottoms.
+Copying the host and its route chain retargets `after` to the copied frames.
+
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming
@@ -116,7 +120,12 @@ entry from inset frames and moves its notes to series 0, as for ordinary stream 
 page. The word follows that stream's last rectangle at the paragraph's line end, left for
 right-to-left paragraphs and right for left-to-right paragraphs. Its 18-point row is part of the band geometry, so another stream cannot
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
-and colour at 9 points; a long word shrinks uniformly to fit its column. Ended and overset
+and colour at 9 points; a long word shrinks uniformly to fit its column. Alternatively,
+`catchwords:{"style":"Catchword"}` applies that character style and reserves a row at
+1.5 times its leading. An unknown style produces a composition warning and uses the
+9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
+remain valid in commands and native files. IDML warns that it loses styled catchwords.
+Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 
@@ -127,6 +136,10 @@ unset series never inherit the host continuation. Both accept at most 256 charac
 control characters; `null` clears the value. Native saves retain them and IDML warns about loss.
 Terminal inset catchwords reserve the same row as catchwords sourced from a following page.
 Visible source is indexed once per stream and page for both inset and text-variable consumers.
+The host's catchword setting also applies to routed series. Only the last route frame of
+each series on a page reserves the bottom row. Its word comes from that series' next
+visible page; a finished series has no catchword. Side notes outside a stream's horizontal
+range do not lower its catchword row. Followers clear every inset stream's catchword row.
 
 A separate text-variable frame can use
 `variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`

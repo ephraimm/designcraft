@@ -48,8 +48,8 @@ pub(crate) struct CellNote {
     pub(crate) note: Arc<Footnote>,
 }
 pub(crate) mod streams;
-pub(crate) use streams::fit_stream_page_for;
 pub use streams::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
+pub(crate) use streams::{fit_stream_page_dynamic, fit_stream_page_for};
 
 /// A footnote assigned to a column.
 pub(crate) struct Placed {
