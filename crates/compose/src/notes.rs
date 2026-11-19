@@ -582,7 +582,12 @@ impl SeriesNotes {
                 };
                 let mut frame = ft.clone();
                 // Body frame ranges exclude paragraph separators; parts own those bytes too.
-                frame.range.end = cs.frames.iter().skip(i.saturating_add(1)).find(|f| !f.lines.is_empty()).map_or(cs.overset_at.unwrap_or(note.text.len()), |f| f.range.start);
+                frame.range.end = cs
+                    .frames
+                    .iter()
+                    .skip(i.saturating_add(1))
+                    .find(|f| !f.lines.is_empty())
+                    .map_or(cs.overset_at.unwrap_or(note.text.len()), |f| f.range.start);
                 if i == 0
                     && run_in.is_some()
                     && let Some(first) = frame.lines.first_mut()
@@ -1163,7 +1168,7 @@ mod tests {
             f.para.drop_cap_words = Some(2);
             f.para.drop_cap_lines = Some(3);
         });
-        let mut notes = Notes::new(&doc, doc.story(sid).unwrap());
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false, None);
         let frame = crate::frame_specs(&doc, sid).remove(0);
         let opts = ComposeOptions::default();
         let parts = notes.compose_parts(&doc, 0, 80.0, &frame, &opts, &[], &[]);

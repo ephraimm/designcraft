@@ -20,6 +20,18 @@ mod spread_rotation;
 mod variables;
 mod wrap;
 
+#[test]
+fn series_terminal_catchword_loss_is_reported_without_note_instances() {
+    let mut doc = Document::new(&NewDocument::default());
+    doc.note_series.push(designcraft_doc::NoteSeries {
+        id: 1,
+        name: "Sources".into(),
+        options: designcraft_doc::FootnoteOptions { catchword_continuation: Some("בשלמא".into()), ..Default::default() },
+    });
+    let (_, warnings) = export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("note-series catchwordContinuation")), "{warnings:?}");
+}
+
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {
     use zip::write::SimpleFileOptions;
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));

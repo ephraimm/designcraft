@@ -147,6 +147,9 @@ pub struct FootnoteOptions {
     /// Omit the number and separator before the note text, independently of its reference.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub body_hidden: bool,
+    /// Catchword after the final page of this series, independently of its host story.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::story::deserialize_catchword_continuation")]
+    pub catchword_continuation: Option<String>,
     pub ref_char_style: String,
     /// Footnote text formatting.
     pub para_style: String,
@@ -188,6 +191,7 @@ impl Default for FootnoteOptions {
             ref_position: Position::Superscript,
             ref_hidden: false,
             body_hidden: false,
+            catchword_continuation: None,
             ref_char_style: NO_CHAR_STYLE.into(),
             para_style: BASIC_PARAGRAPH.into(),
             separator: "\t".into(),
@@ -209,6 +213,9 @@ impl Default for FootnoteOptions {
 impl FootnoteOptions {
     /// Validate layout dimensions at command and native-file boundaries.
     pub fn check(&self) -> Result<(), String> {
+        if self.catchword_continuation.as_deref().is_some_and(|s| !crate::story::valid_catchword_continuation(s)) {
+            return Err("catchwordContinuation must contain at most 256 characters without control characters".into());
+        }
         if !(1..=4).contains(&self.columns) || !self.column_gutter.is_finite() || !(0.0..=144.0).contains(&self.column_gutter) {
             return Err("columns must be 1–4 and columnGutter must be 0–144 pt".into());
         }

@@ -16,17 +16,13 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
     }
     #[cfg(test)]
     LOOKUPS.with(|n| n.set(n.get() + 1));
-    let main = crate::vars::story_catchwords(doc, out, story);
-    let mut words = std::collections::HashMap::new();
-    for id in areas.iter().flatten().filter_map(|(id, _)| *id) {
-        words.entry(id).or_insert_with(|| crate::vars::series_catchwords(doc, out, id));
-    }
+    let index = crate::vars::CatchwordIndex::build(doc, out, story);
     for (spec, regions) in frames.iter().zip(areas) {
         let Some(page) = spec.page else { continue };
         for (series, rect) in regions {
             let word = match series {
-                Some(id) => words.get(id).and_then(|pages| pages.get(&page)),
-                None => main.get(&page).map(|(_, word)| word),
+                Some(id) => index.series.get(id).and_then(|pages| pages.get(&page)),
+                None => index.main.get(&page).map(|(_, word)| word),
             };
             let Some(word) = word.filter(|s| !s.is_empty()) else { continue };
             let Some(frame) = out.frames.iter_mut().find(|f| f.frame == spec.id) else { continue };

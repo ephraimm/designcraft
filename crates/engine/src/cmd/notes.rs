@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Note Series",
             [],
             None,
-            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, bodyHidden?: bool, runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → {id}",
+            "{name, catchwordContinuation?: string|null (at most 256 characters, no controls; null clears), placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, bodyHidden?: bool, runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → {id}",
             has_doc,
             series_create
         ),
@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Note Series Options",
             [],
             None,
-            "{series, runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, catchwordContinuation?: string|null (at most 256 characters, no controls; null clears), runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),
@@ -234,6 +234,21 @@ fn validate_inset_placement(doc: &designcraft_doc::Document, id: u64, options: &
 #[cfg(test)]
 mod inset_placement_tests {
     use super::*;
+
+    #[test]
+    fn series_continuation_validates_roundtrips_and_clears() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("footnote.series.create", &json!({"name":"Sources", "catchwordContinuation":"בשלמא"})).unwrap()["id"].clone();
+        let native = serde_json::to_vec(&s.doc().unwrap().doc).unwrap();
+        let restored: designcraft_doc::Document = serde_json::from_slice(&native).unwrap();
+        assert_eq!(restored.note_options(id.as_u64().unwrap()).catchword_continuation.as_deref(), Some("בשלמא"));
+        for text in ["x".repeat(257), "bad\nword".into()] {
+            assert!(s.execute("footnote.series.options", &json!({"series":id,"catchwordContinuation":text})).is_err());
+        }
+        s.execute("footnote.series.options", &json!({"series":id,"catchwordContinuation":null})).unwrap();
+        assert!(s.doc().unwrap().doc.note_options(id.as_u64().unwrap()).catchword_continuation.is_none());
+    }
 
     #[test]
     fn legacy_inset_selector_does_not_block_unchanged_placement() {

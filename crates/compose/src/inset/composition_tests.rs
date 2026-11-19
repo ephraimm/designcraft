@@ -746,6 +746,21 @@ fn changed_next_page_word_updates_previous_page_catchword() {
 }
 
 #[test]
+fn terminal_catchwords_reserve_rows_for_their_own_streams() {
+    let (mut doc, sid) = document(1, "Main body.", "Inner body.", "Outer body.");
+    enable_catchwords(&mut doc, sid);
+    doc.story_mut(sid).unwrap().catchword_continuation = Some("Main continuation".into());
+    doc.note_series[0].options.catchword_continuation = Some("Inner continuation".into());
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let words: Vec<_> = cs.frames.iter().flat_map(|f| &f.catchwords).collect();
+    assert_eq!(words.len(), 2);
+    assert_eq!(words.iter().find(|c| c.series.is_none()).unwrap().source.as_ref(), "Main continuation");
+    assert_eq!(words.iter().find(|c| c.series == Some(1)).unwrap().source.as_ref(), "Inner continuation");
+    assert!(words.iter().all(|c| c.rect.height() > 0.0));
+}
+
+#[test]
 fn fixed_width_host_columns_do_not_partition_inset_bands() {
     let (mut doc, sid) = document(1, &"Main source words. ".repeat(40), &"Inner source. ".repeat(30), &"Outer source. ".repeat(40));
     let expected = compose_story(&doc, sid, &Default::default());

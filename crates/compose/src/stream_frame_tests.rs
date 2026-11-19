@@ -384,6 +384,27 @@ fn catchword_main_index_excludes_commentary_only_pages() {
 }
 
 #[test]
+fn catchword_series_terminal_is_independent_of_host_and_ignored_before_next_page() {
+    let (mut doc, host, _) = commentary(3, 1, 22.0);
+    doc.story_mut(host).unwrap().catchword_continuation = Some("Host continuation".into());
+    let cs = compose_story(&doc, host, &Default::default());
+    let before = crate::vars::series_catchwords(&doc, &cs, 1);
+    assert!(before.len() > 1);
+    let last = *before.last_key_value().unwrap().0;
+    assert_eq!(before[&last], "");
+    doc.note_series[0].options.catchword_continuation = Some("Series continuation".into());
+    let after = crate::vars::series_catchwords(&doc, &cs, 1);
+    assert_eq!(after[&last], "Series continuation");
+    for (page, word) in &before {
+        if *page != last {
+            assert_eq!(&after[page], word);
+        }
+    }
+    let main = crate::vars::story_catchwords(&doc, &cs, doc.story(host).unwrap());
+    assert_eq!(main.last_key_value().unwrap().1.1, "Host continuation");
+}
+
+#[test]
 fn advancing_a_column_foot_carry_does_not_accept_a_rejected_stream_anchor() {
     let (mut doc, host, _) = commentary(5, 0, 140.0);
     let body = format!("Opening.\nReference.{}Next reference.\nClosing.", designcraft_doc::story::FRAME_BREAK);

@@ -42,6 +42,19 @@ pub struct RunningIndex {
     default_catchwords: HashMap<usize, (usize, StoryId, String)>,
 }
 
+/// One index per composition, keyed by stream then page. Main bytes never include routed notes.
+pub(crate) struct CatchwordIndex {
+    pub main: BTreeMap<usize, (usize, String)>,
+    pub series: HashMap<u64, BTreeMap<usize, String>>,
+}
+
+impl CatchwordIndex {
+    pub fn build(doc: &Document, cs: &ComposedStory, story: &Story) -> Self {
+        let ids: std::collections::BTreeSet<_> = cs.frames.iter().flat_map(|f| &f.notes).map(|n| n.series).collect();
+        Self { main: story_catchwords(doc, cs, story), series: ids.into_iter().map(|id| (id, series_catchwords(doc, cs, id))).collect() }
+    }
+}
+
 fn clean(s: &str) -> String {
     let t: String =
         s.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).map(|c| if c == '\t' || c == '\u{2028}' { ' ' } else { c }).collect();
@@ -86,6 +99,8 @@ fn first_word(text: &str) -> Option<(usize, String)> {
 fn visible_source<'a>(source: &str, glyphs: impl Iterator<Item = &'a crate::PlacedGlyph>) -> String {
     let mut spans = BTreeMap::new();
     for g in glyphs.filter(|g| g.len > 0) {
+        #[cfg(test)]
+        VISIBLE_GLYPHS.with(|n| n.set(n.get() + 1));
         let shown = g.visible || g.adv > 0.0 || crate::breaker::is_forced(g.rendered_char) || g.rendered_char == '\t';
         spans
             .entry(g.byte)
@@ -115,6 +130,53 @@ fn visible_source<'a>(source: &str, glyphs: impl Iterator<Item = &'a crate::Plac
     text
 }
 
+#[cfg(test)]
+thread_local! {
+    static VISIBLE_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static VISIBLE_GLYPHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Index a stream's visible words once per page, retaining suffixes of words split across pages.
+fn page_words(pages: &BTreeMap<usize, String>, continuation: Option<&str>) -> BTreeMap<usize, String> {
+    let mut visible = String::new();
+    let mut offsets = BTreeMap::new();
+    for (page, text) in pages {
+        #[cfg(test)]
+        VISIBLE_BUILDS.with(|n| n.set(n.get() + 1));
+        offsets.insert(*page, visible.len());
+        visible.extend(text.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c) && *c != '\u{00AD}'));
+    }
+    let mut words = BTreeMap::new();
+    let mut word_end = 0;
+    let mut word_start = 0;
+    let mut full_word = String::new();
+    let mut candidates = visible.char_indices().filter(|(_, c)| !c.is_whitespace() && !['(', '[', '"', '\'', '“', '‘', '«'].contains(c)).peekable();
+    for (page, offset) in offsets {
+        while candidates.peek().is_some_and(|(at, _)| *at < offset) {
+            candidates.next();
+        }
+        let word = if let Some(&(at, _)) = candidates.peek() {
+            if at >= word_end {
+                word_end = visible.get(at..).and_then(|s| s.find(char::is_whitespace)).map_or(visible.len(), |end| at + end);
+                word_start = at;
+                full_word = visible.get(at..word_end).and_then(first_word).map(|(_, w)| w).unwrap_or_default();
+            }
+            full_word.get(at.saturating_sub(word_start)..).unwrap_or_default().to_string()
+        } else {
+            String::new()
+        };
+        words.insert(page, word);
+    }
+    pages
+        .keys()
+        .map(|page| {
+            let word =
+                words.range(page.saturating_add(1)..).next().map(|(_, w)| w.clone()).unwrap_or_else(|| continuation.unwrap_or_default().to_string());
+            (*page, word)
+        })
+        .collect()
+}
+
 /// First visible word on the next page showing this series. Source ranges, rather than
 /// generated labels, distinguish a continued note from the next note in the same stream.
 pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64) -> BTreeMap<usize, String> {
@@ -132,15 +194,8 @@ pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64)
     for parts in pages.values_mut() {
         parts.sort_by_key(|(index, start, _)| (*index, *start));
     }
-    let mut out = BTreeMap::new();
-    for page in pages.keys() {
-        let word = pages
-            .range(page.saturating_add(1)..)
-            .next()
-            .and_then(|(_, parts)| parts.iter().find_map(|(_, _, text)| first_word(text).map(|(_, word)| word)));
-        out.insert(*page, word.unwrap_or_default());
-    }
-    out
+    let text = pages.into_iter().map(|(p, parts)| (p, parts.into_iter().map(|(_, _, t)| t).collect::<Vec<_>>().join("\n") + "\n")).collect();
+    page_words(&text, doc.note_options(series).catchword_continuation.as_deref())
 }
 
 /// Catchwords for the main source, with its shown-byte count for default-source selection.
@@ -156,26 +211,26 @@ pub(crate) fn story_catchwords(doc: &Document, cs: &ComposedStory, st: &Story) -
             shown.1 = shown.1.max(ft.range.end);
         }
     }
-    let mut out = BTreeMap::new();
-    for (page, (shown, end)) in pages {
-        let word = if end >= st.text.len() || cs.overset_at.is_some_and(|o| end >= o) {
-            String::new()
-        } else {
-            let glyphs = cs
-                .frames
-                .iter()
-                .filter(main)
-                .filter(|ft| frame_page(doc, ft.frame).is_some_and(|p| p > page))
-                .flat_map(|ft| &ft.lines)
-                .flat_map(|l| &l.glyphs)
-                .filter(|g| g.byte >= end && cs.overset_at.is_none_or(|o| g.byte < o));
-            first_word(&visible_source(&st.text, glyphs)).map(|(_, word)| word).unwrap_or_default()
-        };
-        out.insert(page, (shown, word));
+    let mut glyph_pages: BTreeMap<usize, Vec<_>> = BTreeMap::new();
+    for ft in cs.frames.iter().filter(main) {
+        if let Some(page) = frame_page(doc, ft.frame) {
+            glyph_pages.entry(page).or_default().extend(ft.lines.iter().flat_map(|l| &l.glyphs).filter(|g| cs.overset_at.is_none_or(|o| g.byte < o)));
+        }
     }
-    out
+    let mut text = BTreeMap::new();
+    let mut previous_end = None;
+    for (page, glyphs) in glyph_pages {
+        let start = glyphs.iter().filter(|g| g.len > 0).map(|g| g.byte).min();
+        let mut value = String::new();
+        if previous_end.zip(start).is_some_and(|(a, b)| st.text.get(a..b).is_some_and(|s| s.contains('\n'))) {
+            value.push('\n');
+        }
+        value.push_str(&visible_source(&st.text, glyphs.iter().copied()));
+        previous_end = glyphs.iter().filter(|g| g.len > 0).map(|g| g.byte.saturating_add(g.len)).max().or(previous_end);
+        text.insert(page, value);
+    }
+    page_words(&text, st.catchword_continuation.as_deref()).into_iter().map(|(p, w)| (p, (pages.get(&p).map_or(0, |s| s.0), w))).collect()
 }
-
 /// A paragraph or run a running header may show: where it starts ([`place`]), its story and byte
 /// there, and its text.
 struct Hit {
@@ -240,11 +295,14 @@ impl RunningIndex {
                 continue;
             }
             let cs = get(*sid);
-            for series in catchword_stories.iter().filter_map(|(story, series)| (story == &Some(*sid)).then_some(*series).flatten()) {
-                index.series_catchwords.extend(series_catchwords(doc, &cs, series).into_iter().map(|(page, word)| ((*sid, series, page), word)));
+            let catchwords = catchword_hit.then(|| CatchwordIndex::build(doc, &cs, st));
+            if let Some(words) = &catchwords {
+                for (series, pages) in &words.series {
+                    index.series_catchwords.extend(pages.iter().map(|(page, word)| ((*sid, *series, *page), word.clone())));
+                }
             }
             if catchword_stories.iter().any(|(story, series)| series.is_none() && story.is_none_or(|id| id == *sid)) {
-                for (page, (shown, word)) in story_catchwords(doc, &cs, st) {
+                for (page, (shown, word)) in catchwords.into_iter().flat_map(|w| w.main) {
                     index.catchwords.insert((*sid, page), word.clone());
                     let default = index.default_catchwords.entry(page).or_insert((shown, *sid, word.clone()));
                     if shown > default.0 || (shown == default.0 && *sid < default.1) {
@@ -352,6 +410,56 @@ pub fn values_shown(doc: &Document, page: Option<usize>, parent: bool, running: 
 #[cfg(test)]
 mod tests {
     use super::first_word;
+
+    #[test]
+    fn catchword_visible_text_is_reconstructed_once_per_page() {
+        use super::*;
+        use designcraft_doc::{
+            build::NewDocument,
+            vars::{TextVariable, VarKind},
+        };
+        let mut doc = Document::new(&NewDocument { pages: 24, ..Default::default() });
+        let text = (0..24)
+            .map(|p| format!("{} tail{}\n", if p == 0 { ".....".into() } else { format!("Word{p}") }, designcraft_doc::story::FRAME_BREAK))
+            .collect::<String>();
+        let mut previous = None;
+        let mut story = None;
+        for page in 0..24 {
+            let (si, pi) = doc.page_loc(page).unwrap();
+            let x = doc.spreads[si].pages[pi].x;
+            let (id, sid) = doc
+                .add_text_frame(
+                    SpreadRef::Doc(si),
+                    designcraft_geom::Rect::new(x + 72.0, 72.0, x + 500.0, 172.0),
+                    doc.default_layer(),
+                    if page == 0 { &text } else { "" },
+                    Default::default(),
+                )
+                .unwrap();
+            if let Some(from) = previous {
+                doc.thread(from, id).unwrap();
+            }
+            previous = Some(id);
+            story.get_or_insert(sid);
+        }
+        let sid = story.unwrap();
+        doc.text_variables.push(TextVariable::new("Catchword", VarKind::NextPageFirstWord { story: Some(sid), series: None }));
+        let cs = Arc::new(crate::compose_story(&doc, sid, &Default::default()));
+        VISIBLE_BUILDS.with(|n| n.set(0));
+        VISIBLE_GLYPHS.with(|n| n.set(0));
+        let index = RunningIndex::build(&doc, &|_| cs.clone());
+        let glyphs = cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter(|g| g.len > 0).count();
+        assert_eq!(VISIBLE_GLYPHS.with(|n| n.get()), glyphs, "each source glyph is reconstructed only once");
+        assert_eq!(VISIBLE_BUILDS.with(|n| n.get()), 24);
+        for page in 0..23 {
+            assert_eq!(index.catchword(Some(sid), page), format!("Word{}", page + 1));
+        }
+        assert_eq!(index.catchword(Some(sid), 23), "");
+        doc.story_mut(sid).unwrap().catchword_continuation = Some("Next excerpt".into());
+        let index = RunningIndex::build(&doc, &|_| cs.clone());
+        assert_eq!(index.catchword(Some(sid), 0), "Word1");
+        assert_eq!(index.catchword(Some(sid), 23), "Next excerpt");
+    }
 
     #[test]
     fn first_word_preserves_hebrew_marks_and_internal_punctuation() {

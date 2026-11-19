@@ -360,7 +360,7 @@ pub(crate) fn place_table(
                 layouts[r * nc + c] = Some(layout);
             }
         }
-        notes.resume(if footer > 0 && footer_number.key == note_number.key { footer_number } else { note_number });
+        notes.resume(after_footer_number(note_number, footer_number, footer > 0));
         let (heights, group_end) = geometry(&layouts);
         let keep_end = keep_groups(table, &group_end, body_end);
         let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
@@ -589,6 +589,11 @@ fn keep_groups(table: &Table, group_end: &[usize], body_end: usize) -> Vec<usize
         }
     }
     keep_end
+}
+
+/// A repeated footer advances only the body page's own counter, never a later page's counter.
+fn after_footer_number(body: NoteNumber, footer: NoteNumber, has_footer: bool) -> NoteNumber {
+    if has_footer && footer.key == body.key { footer } else { body }
 }
 
 /// First emitted page of each row in this table's new fragments, including repeated footers.

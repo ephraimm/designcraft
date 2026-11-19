@@ -120,6 +120,14 @@ and colour at 9 points; a long word shrinks uniformly to fit its column. Ended a
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 
+`story.options {story, catchwordContinuation:"word"}` supplies the main stream's final excerpt
+catchword. `footnote.series.options {series, catchwordContinuation:"word"}` independently supplies
+that series' terminal catchword. Each is used only without a following page in its stream;
+unset series never inherit the host continuation. Both accept at most 256 characters without
+control characters; `null` clears the value. Native saves retain them and IDML warns about loss.
+Terminal inset catchwords reserve the same row as catchwords sourced from a following page.
+Visible source is indexed once per stream and page for both inset and text-variable consumers.
+
 A separate text-variable frame can use
 `variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`
 source supplies its host and series automatically. Without `series`, existing main-story and
