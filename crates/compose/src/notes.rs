@@ -422,16 +422,19 @@ impl SeriesNotes {
             first.para.list_type = Some(designcraft_doc::ListType::None);
         }
         let cs = crate::compose(doc, &text, &specs, &nopts);
+        // A replay's first part keeps its original width, even when the current band narrows.
+        // Testing it against the current width could change an already emitted source cut.
+        let first_width = specs.first().map_or(w, |spec| spec.area.width());
         if let Some(run) = run_in.filter(|run| run.inline)
             && cs.frames.first().and_then(|f| f.lines.first()).is_some_and(|line| {
                 let (pp, _) = doc.styles.resolve_para(&run.para);
                 let label_advance: f64 = line.glyphs.iter().filter(|g| g.byte == 0 && g.len == 0).map(|g| g.adv).sum();
                 line.glyphs.iter().any(|g| {
                     g.x < -0.01
-                        || g.x + g.adv > w + 0.01
+                        || g.x + g.adv > first_width + 0.01
                         || (g.len > 0
                             && if pp.direction == designcraft_doc::TextDirection::RightToLeft {
-                                g.x + g.adv > w - pp.right_indent - run.indent - label_advance + 0.01
+                                g.x + g.adv > first_width - pp.right_indent - run.indent - label_advance + 0.01
                             } else {
                                 g.x < pp.left_indent + run.indent + label_advance - 0.01
                             })

@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: run-in note continuations preserve all source text when later bands change width; the overlap fallback uses the first part's own width.
+
 - **2026-11-19** · Run-in note headings move to the next line when their glyphs would overlap the predecessor or consume its separator space, in RTL and LTR text.
 
 - **2026-11-19** · Run-in notes build on inset-column layout; delayed main starts count shared physical baselines once. IDML warns when effective run-in notes become separate footnotes.
