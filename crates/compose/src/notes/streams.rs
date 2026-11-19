@@ -137,7 +137,7 @@ pub(crate) fn fit_stream_page_dynamic(
     let mut ids: Vec<_> = crate::stream_frame_specs(doc, story.id)
         .iter()
         .chain(input.areas)
-        .filter_map(|f| f.opts.note_stream.map(|s| s.series))
+        .filter_map(|f| f.opts.note_stream.as_ref().map(|s| s.series))
         .chain(before.series.keys().copied())
         .filter(|id| only.is_none_or(|wanted| wanted.contains(id)) && matches!(doc.note_options(*id).placement, NotePlacement::Stream))
         .collect();
@@ -169,14 +169,15 @@ pub(crate) fn fit_stream_page_dynamic(
             notes.band_incoming = notes.carry.as_ref().map(|c| (c.k, c.heights.len()));
         }
         let had_carry = notes.carry.is_some();
-        contexts.insert(series, (notes, anchors, 0usize, had_carry));
+        contexts.insert(series, (notes, anchors, 0usize, had_carry, None));
     }
+    let mut sources = HashMap::new();
     let mut areas = input.areas.to_vec();
     for fi in 0..areas.len() {
         adjust(fi, &mut areas, &result.frames, &mut result.warnings);
         let Some(frame) = areas.get(fi) else { continue };
-        let Some(series) = frame.opts.note_stream.map(|s| s.series) else { continue };
-        let Some((notes, anchors, next, had_carry)) = contexts.get_mut(&series) else { continue };
+        let Some(series) = frame.opts.note_stream.as_ref().map(|s| s.series) else { continue };
+        let Some((notes, anchors, next, had_carry, previous)) = contexts.get_mut(&series) else { continue };
         let allow_split = doc.note_options(series).allow_split;
         if let Some(out) = result.frames.get_mut(fi) {
             out.columns = frame.columns();
@@ -187,11 +188,11 @@ pub(crate) fn fit_stream_page_dynamic(
                 continue;
             }
             let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
-            if opts.note_bands {
-                notes.band_previous = placed_parts(doc, story, notes, &areas, true)
-                    .last()
-                    .and_then(|(_, part)| part.text.frames.first().and_then(|f| f.lines.last()).map(|l| part.origin.y + l.baseline));
+            if !opts.note_bands {
+                *previous = None;
             }
+            notes.band_previous = previous.map(|(baseline, _, _)| baseline);
+            let placed_start = notes.placed.len();
             notes.band_span = opts.note_bands.then_some(area.height());
             notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
             let room = area.height();
@@ -202,11 +203,10 @@ pub(crate) fn fit_stream_page_dynamic(
                 } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[], available, opts).filter(respects_keeps) {
                     notes.place_line(doc, column, &[], Some(plan), opts);
                 }
-                if notes.carry.is_some() {
-                    continue;
-                }
             }
-            while let Some(&k) = anchors.get(*next) {
+            while notes.carry.is_none()
+                && let Some(&k) = anchors.get(*next)
+            {
                 let available = room - notes.area_space(doc, column, &[k], opts);
                 if notes.reserve(doc, column, &[k], opts) <= room + 0.01 {
                     notes.place_line(doc, column, &[k], None, opts);
@@ -229,15 +229,23 @@ pub(crate) fn fit_stream_page_dynamic(
                     break;
                 }
             }
+<<<<<<< HEAD
         }
         for (_, part) in placed_parts(doc, story, notes, &areas, opts.note_bands).into_iter().filter(|(index, _)| *index == fi) {
             if let Some(out) = result.frames.get_mut(fi) {
                 out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
                 super::append_note(&mut out.notes, part);
+=======
+            for part in placed_parts(doc, story, notes, &notes.placed[placed_start..], *area, ci, opts.note_bands, previous, &mut sources) {
+                if let Some(out) = result.frames.get_mut(fi) {
+                    out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
+                    super::append_note(&mut out.notes, part);
+                }
+>>>>>>> origin/codex/issue-2873-inset-column-layout
             }
         }
     }
-    for (series, (notes, anchors, next, _)) in contexts {
+    for (series, (notes, anchors, next, _, _)) in contexts {
         if let Some(&k) = anchors.get(next) {
             result.starts_fit = false;
             let anchor = notes.refs.get(k).copied();
@@ -259,6 +267,7 @@ pub(crate) fn fit_stream_page_dynamic(
     result
 }
 
+<<<<<<< HEAD
 fn placed_parts(doc: &Document, _story: &Story, notes: &SeriesNotes, areas: &[FrameSpec], bands: bool) -> Vec<(usize, PlacedNote)> {
     let o = doc.note_options(notes.series);
     let mut out = Vec::new();
@@ -307,6 +316,60 @@ fn placed_parts(doc: &Document, _story: &Story, notes: &SeriesNotes, areas: &[Fr
                 first = false;
             }
         }
+=======
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PART_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[allow(clippy::too_many_arguments)]
+fn placed_parts(
+    doc: &Document,
+    _story: &Story,
+    notes: &SeriesNotes,
+    parts: &[super::Placed],
+    area: Rect,
+    column: usize,
+    bands: bool,
+    previous: &mut Option<(f64, f64, super::NoteMetrics)>,
+    sources: &mut HashMap<usize, Arc<str>>,
+) -> Vec<PlacedNote> {
+    let o = doc.note_options(notes.series);
+    let mut out = Vec::new();
+    let mut first = true;
+    for part in parts {
+        #[cfg(test)]
+        PART_VISITS.with(|n| n.set(n.get() + 1));
+        let note = &part.note;
+        let key = match part.source {
+            super::NoteSource::Story(k) | super::NoteSource::Cell { k, .. } => k,
+        };
+        let y = if bands && first && part.part > 0 && previous.is_some() {
+            area.y0
+        } else {
+            previous.map_or(area.y0 + o.space_before + part.m.top_padding(), |(baseline, _, metrics)| {
+                baseline + o.space_between + metrics.advance_to(part.m) - part.m.first
+            })
+        };
+        let bottom = y + part.m.last + part.m.descent;
+        let top = if first { y } else { previous.map_or(y, |(_, bottom, _)| if part.m.lead <= 0.0 { y + part.m.first - part.m.ascent } else { bottom + o.space_between }) };
+        out.push(PlacedNote {
+            id: note.id,
+            index: key,
+            series: notes.series,
+            reference_baseline: 0.0,
+            overflow: bottom > area.y1 + 0.01,
+            column: column as u32,
+            label: part.label.clone(),
+            origin: Point::new(area.x0, y),
+            rect: Rect::new(area.x0, top, area.x1, bottom),
+            text: part.text.clone(),
+            source: sources.entry(key).or_insert_with(|| Arc::from(note.text.text.as_str())).clone(),
+            note: Arc::clone(note),
+        });
+        *previous = Some((y + part.m.last, bottom, part.m));
+        first = false;
+>>>>>>> origin/codex/issue-2873-inset-column-layout
     }
     out
 }
@@ -349,7 +412,7 @@ impl StreamComposer {
     }
 
     pub(super) fn has_route(&self, series: u64) -> bool {
-        self.inset_series.contains(&series) || self.routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == series))
+        self.inset_series.contains(&series) || self.routes.iter().any(|f| f.opts.note_stream.as_ref().is_some_and(|s| s.series == series))
     }
 
     pub(super) fn snapshot(&self) -> usize {
@@ -406,7 +469,8 @@ impl StreamComposer {
             .filter(|note| matches!(doc.note_options(note.series).placement, NotePlacement::Stream))
             .all(|note| {
                 let series = doc.note_series_id(note.series);
-                !self.has_route(series) || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.is_some_and(|s| s.series == series))
+                !self.has_route(series)
+                    || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.as_ref().is_some_and(|s| s.series == series))
             });
         let can_force = !has_main && !fit.had_continuation && routes_present;
         if !fit.starts_fit && !can_force {
