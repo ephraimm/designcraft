@@ -144,7 +144,7 @@ be enabled. Only the last opted-in route frame of each series on a page reserves
 directly below its last composed line. Native saves preserve the opt-in flag; IDML warns
 that it loses it. A
 `followInset.after` follower clears that row. Its word comes from that series' next
-visible page or its own terminal continuation; a finished series without one has no catchword. Side notes outside a stream's horizontal
+visible page, or its own `catchwordContinuation` at the excerpt end. A finished series without continuation text has no catchword. Side notes outside a stream's horizontal
 range do not lower its catchword row. Followers clear every inset stream's catchword row.
 
 A separate text-variable frame can use
