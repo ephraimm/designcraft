@@ -74,7 +74,7 @@ fn first_word(text: &str) -> Option<(usize, String)> {
         .skip_while(|(_, c)| c.is_whitespace() || ['(', '[', '"', '\'', '“', '‘', '«'].contains(c))
         .peekable();
     let start = chars.peek()?.0;
-    let word: String = chars.take_while(|(_, c)| !c.is_whitespace()).take(64).map(|(_, c)| c).collect();
+    let word: String = chars.take_while(|(_, c)| !c.is_whitespace()).map(|(_, c)| c).collect();
     let word = word.trim_end_matches([',', '.', ';', ':', '!', '?', ')', ']', '"', '\'', '”', '’', '»', '׃', '׀']);
     (!word.is_empty()).then(|| (start, word.to_string()))
 }
@@ -161,7 +161,7 @@ impl RunningIndex {
                             .filter(|(offset, _)| {
                                 let Some(start) = end.checked_add(*offset) else { return false };
                                 cs.overset_at.is_none_or(|o| start < o)
-                                    && cs.frames.iter().any(|ft| ft.range.contains(&start) && frame_page(doc, ft.frame) != Some(page))
+                                    && cs.frames.iter().any(|ft| ft.range.contains(&start) && frame_page(doc, ft.frame).is_some_and(|p| p != page))
                             })
                             .map(|(_, word)| word)
                             .unwrap_or_default()
@@ -286,7 +286,8 @@ mod tests {
         ] {
             assert_eq!(first_word(text).map(|(_, word)| word).unwrap_or_default(), word, "{text:?}");
         }
-        assert_eq!(first_word(&"א".repeat(100)).unwrap().1.chars().count(), 64);
+        let word = format!("{}בְּ", "א".repeat(63));
+        assert_eq!(first_word(&format!("{word} next")), Some((0, word)));
         let prefix = " \t\u{E100}\u{AD}«[";
         assert_eq!(first_word(&format!("{prefix}בְּקְרוֹב,")), Some((prefix.len(), "בְּקְרוֹב".into())));
         assert_eq!(first_word(""), None);
