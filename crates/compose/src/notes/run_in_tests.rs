@@ -240,6 +240,72 @@ fn run_in_hebrew_flows_from_the_right() {
     assert!(x(ns[1]) < x(ns[0]));
 }
 
+fn bold_run_in_after_predecessor(rtl: bool, long: bool) {
+    let (mut doc, sid) = sample(NotePlacement::ColumnFoot);
+    doc.footnote_options.body_hidden = true;
+    doc.footnote_options.run_in_separator = " ".into();
+    let story = doc.story_mut(sid).unwrap();
+    let predecessor = if rtl { "פירוש קצר " } else { "Short text " };
+    let heading = if rtl { "מתני'" } else { "Heading" };
+    for (i, note) in story.notes.iter_mut().enumerate() {
+        let note = Arc::make_mut(note);
+        note.text = Story::with_text(note.text.id, if i == 0 { predecessor.trim_end() } else { heading }, ParaFormat::default());
+        note.text.paras[0].para.direction = Some(if rtl { TextDirection::RightToLeft } else { TextDirection::LeftToRight });
+        note.text.paras[0].para.align = Some(if rtl { designcraft_doc::Align::Right } else { designcraft_doc::Align::Left });
+        if i == 1 {
+            note.text.format_chars(0..heading.len(), |f| f.over.font_style = Some("Bold".into()));
+        }
+    }
+    if long {
+        // Measure the actual fonts so the predecessor fits but the bold heading cannot.
+        doc.footnote_options.run_in = false;
+        let separate = crate::compose_story(&doc, sid, &Default::default());
+        let separate = notes(&separate);
+        let width = |n: &PlacedNote| n.text.frames[0].lines[0].glyphs.iter().map(|g| g.adv).sum::<f64>();
+        doc.footnote_options.placement =
+            NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: width(separate[0]) + width(separate[1]) * 0.5 };
+        doc.footnote_options.run_in = true;
+    }
+    let cs = crate::compose_story(&doc, sid, &Default::default());
+    let ns = notes(&cs);
+    assert_eq!(ns.len(), 3);
+    let last = ns[0].text.frames[0].lines.last().unwrap();
+    let previous_y = ns[0].origin.y + last.baseline;
+    let next_y = baseline(ns[1]);
+    if long {
+        assert!(next_y > previous_y + 1.0, "rtl={rtl}: heading must move below predecessor, {previous_y} vs {next_y}");
+        assert!(!ns[1].text.frames[0].lines[0].glyphs.iter().any(|g| g.len == 0), "separator must not start the new line");
+    } else {
+        assert!((next_y - previous_y).abs() < 0.01, "rtl={rtl}: short predecessor must join inline");
+    }
+    if (next_y - previous_y).abs() < 0.01 {
+        let next = &ns[1].text.frames[0].lines[0];
+        if rtl {
+            let end = last.glyphs.iter().map(|g| g.x).fold(f64::INFINITY, f64::min);
+            assert!(next.glyphs.iter().all(|g| g.x + g.adv <= end + 0.01));
+        } else {
+            let end = last.glyphs.iter().map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+            assert!(next.glyphs.iter().all(|g| g.x >= end - 0.01));
+        }
+    }
+}
+
+#[test]
+fn run_in_bold_heading_after_nearly_full_rtl_line() {
+    bold_run_in_after_predecessor(true, true);
+}
+
+#[test]
+fn run_in_bold_heading_after_nearly_full_ltr_line() {
+    bold_run_in_after_predecessor(false, true);
+}
+
+#[test]
+fn run_in_bold_heading_after_short_line_stays_inline() {
+    bold_run_in_after_predecessor(true, false);
+    bold_run_in_after_predecessor(false, false);
+}
+
 #[test]
 fn run_in_long_note_splits_and_keeps_source_ranges() {
     let (mut doc, sid) = sample(NotePlacement::Stream);
