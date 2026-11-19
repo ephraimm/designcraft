@@ -818,7 +818,7 @@ impl SeriesNotes {
     pub fn fit(&mut self, doc: &Document, column: NoteColumn<'_>, ks: &[usize], opts: &ComposeOptions) -> bool {
         ks.iter().all(|&k| match self.compose_parts(doc, k, column.width, column.frame, opts, &[], &[]).first() {
             Some(Some((text, _))) => text.overset_at.is_none(),
-            _ => self.notes.get(k).is_none_or(|n| n.text.len() == 0),
+            _ => self.notes.get(k).is_none_or(|n| n.text.is_empty()),
         })
     }
 
