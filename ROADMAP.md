@@ -4,6 +4,8 @@
 
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+- 2026-11-19: inset routes include catchword clearance, share one fit across same-page hosts, and can follow an earlier route's composed bottom with `followInset.after` (#2873). Cut verification uses its remaining budget; catchword lookup and core measurement avoid redundant work.
+
 - **2026-11-19** · Commentary routes can end a column at the composed inset core or start a foot below it with `noteStream.followInset`; geometry participates in page fitting and follows text edits (#2873).
 - **2026-11-19** · Inset placements retain each cell or host note's composed source text (#2611).
   Host reference baselines are assigned once after routes are appended, using an ordered pass.

@@ -76,7 +76,9 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
     let mut ex = Ex::new(doc, opts);
     ex.embed_limit = embed_limit;
     if doc.placed_items().iter().any(|item| item.text_frame().and_then(|f| f.options.note_stream).is_some_and(|s| s.follow_inset.is_some())) {
-        ex.warnings.push("IDML cannot retain noteStream followInset geometry; export PDF for the composed route layout.".into());
+        ex.warnings.push(
+            "IDML cannot retain noteStream followInset geometry or its after frame dependency; export PDF for the composed route layout.".into(),
+        );
     }
     if any_footnote(doc, |note| note.run_in.unwrap_or(doc.note_options(note.series).run_in)) {
         ex.warnings.push("IDML cannot retain run-in notes; they are exported as separate footnotes.".into());
