@@ -7,6 +7,8 @@
 - 2026-11-19: inset routes include catchword clearance, share one fit across same-page hosts, and can follow an earlier route's composed bottom with `followInset.after` (#2873). Cut verification uses its remaining budget; catchword lookup and core measurement avoid redundant work.
 
 - **2026-11-19** · Commentary routes can end a column at the composed inset core or start a foot below it with `noteStream.followInset`; geometry participates in page fitting and follows text edits (#2873).
+- 2026-11-19: inset commentary completeness checks source identity, so a complete cell note cannot hide missing host-note coverage at the same ordinal (#2611).
+
 - **2026-11-19** · Inset placements retain each cell or host note's composed source text (#2611).
   Host reference baselines are assigned once after routes are appended, using an ordered pass.
 
