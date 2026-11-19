@@ -858,7 +858,7 @@ pub(crate) fn compose_frames(
 mod search_tests {
     use super::*;
     #[test]
-    fn full_page_fit_survives_a_run_in_feasibility_hole() {
+    fn full_page_fit_survives_nonmonotone_feasibility() {
         let (best, _) = search(&[1, 2, 3, 4, 5], 4, |key| Ok((key, key == 1 || key == 5, key))).unwrap();
         assert_eq!(best, Some(5));
     }

@@ -4,6 +4,7 @@
 
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+- **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-11-16: a long footnote continues at the foot of the next column or frame; Allow Split Footnotes (IDML `NoSplitting`) turns it off (#1941).
