@@ -9,6 +9,9 @@ use the same engine commands.
 `footnote.setRunIn {story, ids, runIn}` changes existing notes; `null` restores
 the series setting. `footnote.list` reports the override. These edits support undo.
 Native files retain the settings; older documents keep separate paragraphs.
+IDML export warns when a note's effective run-in setting is enabled: IDML writes
+separate footnotes. In inset columns, shared run-in baselines count once when
+selecting the main text's starting baseline.
 
 In column feet, stream-frame columns and margins, the next note can continue
 on the preceding note's last line. The separator precedes its number and text.

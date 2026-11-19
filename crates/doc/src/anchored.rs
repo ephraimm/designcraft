@@ -346,10 +346,12 @@ impl Document {
         source: Option<&Document>,
     ) {
         let mut has_routes = false;
-        visit(&mut |item| has_routes |= item.text_frame().is_some_and(|tf| tf.options.note_stream.is_some()));
+        visit(&mut |item| has_routes |= item.text_frame().is_some_and(|tf| tf.options.note_stream.is_some() || tf.options.inset_columns.is_some()));
         for id in copies.values() {
             if let Some(story) = self.story(*id) {
-                items(story, 0, &mut |item| has_routes |= item.text_frame().is_some_and(|tf| tf.options.note_stream.is_some()));
+                items(story, 0, &mut |item| {
+                    has_routes |= item.text_frame().is_some_and(|tf| tf.options.note_stream.is_some() || tf.options.inset_columns.is_some())
+                });
             }
         }
         if !has_routes {
@@ -367,6 +369,13 @@ impl Document {
                         },
                     })
                 });
+                if let (Some(inset), Some(ids), Some(src)) = (&mut tf.options.inset_columns, &series, source) {
+                    for stream in &mut inset.streams {
+                        if let Some(id) = &mut stream.series {
+                            *id = ids.get(&src.note_series_id(*id)).copied().unwrap_or(0);
+                        }
+                    }
+                }
             }
         };
         visit(&mut retarget);
@@ -913,5 +922,37 @@ mod tests {
         texts.sort();
         assert_eq!(texts, ["Deeper", "Inner \u{E00E}", "Other"]);
         assert_eq!(b.story(other).unwrap().text, "Other");
+    }
+    #[test]
+    fn anchored_inset_selectors_adopt_the_same_library_without_note_bodies() {
+        let (mut source, root) = doc();
+        source.note_series.push(crate::NoteSeries {
+            id: 1,
+            name: "Commentary".into(),
+            options: crate::FootnoteOptions { placement: crate::NotePlacement::Stream, ..Default::default() },
+        });
+        let (container, _) = anchor(&mut source, root, "Container");
+        anchor(&mut source, container, "Nested main");
+        anchor(&mut source, root, "Root main");
+        for (story, index) in [(container, 0), (root, 1)] {
+            Arc::make_mut(&mut source.story_mut(story).unwrap().objects[index]).item.text_frame_mut().unwrap().options.inset_columns =
+                Some(serde_json::from_value(serde_json::json!({"streams": [{}, {"series": 1}], "catchwords": true})).unwrap());
+        }
+        let (mut destination, target) = doc();
+        destination.note_series.push(crate::NoteSeries { id: 1, name: "Other".into(), options: Default::default() });
+        let original = source.story(root).unwrap();
+        let mut copy = original.extract(0..original.len());
+        destination.adopt_anchored_from(&mut copy, &source);
+        let nested = copy.objects[0].item.text_frame().unwrap().story;
+        let root_config = copy.objects[1].item.text_frame().unwrap().options.inset_columns.as_ref().unwrap();
+        let nested_config = destination.story(nested).unwrap().objects[0].item.text_frame().unwrap().options.inset_columns.as_ref().unwrap();
+        let mapped = root_config.streams[1].series.unwrap();
+        assert_ne!(mapped, 1);
+        assert_eq!(nested_config.streams[1].series, Some(mapped));
+        assert!(root_config.catchwords && nested_config.catchwords);
+        assert!(matches!(destination.note_options(mapped).placement, crate::NotePlacement::Stream));
+        let story = destination.story_mut(target).unwrap();
+        story.insert_story(story.len(), &copy);
+        destination.check().unwrap();
     }
 }

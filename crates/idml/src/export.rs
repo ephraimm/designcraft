@@ -75,6 +75,9 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
     ex.embed_limit = embed_limit;
+    if any_footnote(doc, |note| note.run_in.unwrap_or(doc.note_options(note.series).run_in)) {
+        ex.warnings.push("IDML cannot retain run-in notes; they are exported as separate footnotes.".into());
+    }
     if any_footnote(doc, |n| n.series != 0 || matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {
         ex.warnings.push(
             "IDML supports one footnote setup; additional note series and margin placement are exported as ordinary footnotes using series 0.".into(),
@@ -89,6 +92,12 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
     }
     if any_footnote(doc, |note| doc.note_options(note.series).body_hidden) {
         ex.warnings.push("IDML cannot retain hidden note body labels; notes are exported with ordinary footnote numbers and separators.".into());
+    }
+    if doc.placed_items().iter().any(|item| item.text_frame().is_some_and(|f| f.options.inset_columns.is_some())) {
+        ex.warnings.push("IDML cannot retain inset-column geometry; export PDF for the composed stream layout.".into());
+    }
+    if doc.text_variables.iter().any(|v| matches!(v.kind, designcraft_doc::vars::VarKind::NextPageFirstWord { .. })) {
+        ex.warnings.push("IDML cannot retain catchwords; they export as empty custom-text variables.".into());
     }
     let parts = ex.build();
     (zip_parts(&parts), ex.warnings)

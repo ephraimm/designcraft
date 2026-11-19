@@ -25,7 +25,8 @@ use designcraft_geom::{Point, Rect};
 use crate::shape::{Glyph, SubstCtx};
 use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, PlacedNote};
 
-mod streams;
+pub(crate) mod streams;
+pub(crate) use streams::fit_stream_page_for;
 pub use streams::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
 
 /// A footnote assigned to a column.
@@ -101,11 +102,13 @@ impl PartPage {
 }
 
 /// Last placed part, including each part's area and page context used to thread its text.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct Carry {
     k: usize,
     heights: Vec<(f64, f64)>,
     pages: Vec<PartPage>,
+    continuations: Vec<(usize, f64)>,
+    exclusions: Vec<(usize, Vec<crate::Exclusion>)>,
     fi: usize,
     col: usize,
     run_in: Option<RunIn>,
@@ -121,6 +124,9 @@ struct RunIn {
 }
 
 pub(crate) struct SplitPlan {
+    band_span: Option<f64>,
+    exclusions: Vec<(usize, Vec<crate::Exclusion>)>,
+    continuations: Vec<(usize, f64)>,
     remainder: bool,
     k: usize,
     heights: Vec<(f64, f64)>,
@@ -146,6 +152,11 @@ fn append_note(notes: &mut Vec<PlacedNote>, note: PlacedNote) {
 
 pub(super) struct SeriesNotes {
     series: u64,
+    band_previous: Option<f64>,
+    band_continued: bool,
+    band_span: Option<f64>,
+    band_spans: HashMap<(usize, usize), f64>,
+    band_incoming: Option<(usize, usize)>,
     members: Vec<bool>,
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
@@ -169,6 +180,11 @@ impl SeriesNotes {
         let start = if refs.is_empty() { 1 } else { doc.footnote_series_start(story.id, series) };
         Self {
             series,
+            band_previous: None,
+            band_continued: false,
+            band_span: None,
+            band_spans: HashMap::new(),
+            band_incoming: None,
             members: story.notes.iter().map(|n| nested || doc.note_series_id(n.series) == series).collect(),
             numbers: vec![start; refs.len()],
             refs,
@@ -303,22 +319,26 @@ impl SeriesNotes {
         };
         // Parent frames have no page index: their prefix and section context must also distinguish cached text.
         let current_page = PartPage::of(f);
-        let key = (
-            k,
-            label.clone(),
-            w.to_bits(),
-            current_page.clone(),
-            heights
-                .iter()
-                .enumerate()
-                .map(|(i, (pw, h))| {
-                    let page = pages.get(i).unwrap_or(&current_page);
-                    (pw.to_bits(), h.to_bits(), page.clone())
-                })
-                .collect(),
-            run_in.map(|run| (run.owner, run.indent.to_bits(), run.inline)),
-        );
-        if let Some(c) = self.cache.get(&key) {
+        // Band replays depend on mutable continuation and contour history. Keep the
+        // ordinary route cache; band trials must measure their exact current inputs.
+        let key = (!opts.note_bands).then(|| {
+            (
+                k,
+                label.clone(),
+                w.to_bits(),
+                current_page.clone(),
+                heights
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (pw, h))| {
+                        let page = pages.get(i).unwrap_or(&current_page);
+                        (pw.to_bits(), h.to_bits(), page.clone())
+                    })
+                    .collect(),
+                run_in.map(|run| (run.owner, run.indent.to_bits(), run.inline)),
+            )
+        });
+        if let Some(c) = key.as_ref().and_then(|key| self.cache.get(key)) {
             return c.clone();
         }
         let spec = FrameSpec {
@@ -345,15 +365,41 @@ impl SeriesNotes {
             label: (!label.is_empty()).then_some(label),
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
+            continuations: self.part_continuations(k, heights, opts.note_bands),
+            ..Default::default()
         };
         let Some(note) = self.notes.get(k) else { return Vec::new() };
+        let previous = self.carry.as_ref().filter(|c| c.k == k);
+        let part = previous.map_or(0, |c| c.heights.len());
+        let local_exclusions = || {
+            if opts.note_bands {
+                f.exclusions
+                    .iter()
+                    .map(|e| crate::Exclusion {
+                        rect: e.rect + designcraft_geom::Vec2::new(-f.area.x0, -f.area.y0),
+                        contour: e.contour.as_ref().map(|c| c.clone().transformed(designcraft_geom::Affine::translate((-f.area.x0, -f.area.y0)))),
+                        ..e.clone()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         let specs: Vec<FrameSpec> = heights
             .iter()
+            .copied()
+            .chain(std::iter::once((w, 1.0e6)))
             .enumerate()
-            .map(|(i, &(pw, h))| {
+            .map(|(i, (pw, h))| {
+                let exclusions = if i == part {
+                    local_exclusions()
+                } else {
+                    previous.and_then(|c| c.exclusions.iter().find(|(index, _)| *index == i)).map_or_else(Vec::new, |(_, e)| e.clone())
+                };
                 let page = pages.get(i).unwrap_or(&current_page);
                 FrameSpec {
                     area: Rect::new(0.0, 0.0, pw.max(1.0), h),
+                    exclusions,
                     page_name: page.page_name.clone(),
                     section_marker: page.section_marker.clone(),
                     page: page.page,
@@ -363,7 +409,6 @@ impl SeriesNotes {
                     ..spec.clone()
                 }
             })
-            .chain(std::iter::once(spec.clone()))
             .collect();
         let mut text = note.text.clone();
         if let Some(run) = run_in
@@ -410,7 +455,26 @@ impl SeriesNotes {
                 Some((Arc::new(text), m))
             })
             .collect::<Vec<_>>();
-        self.cache.insert(key, parts.clone());
+        if let Some(key) = key {
+            self.cache.insert(key, parts.clone());
+        }
+        parts
+    }
+
+    fn part_continuations(&self, k: usize, heights: &[(f64, f64)], bands: bool) -> Vec<(usize, f64)> {
+        let mut parts = self.carry.as_ref().filter(|c| c.k == k).map_or_else(Vec::new, |c| c.continuations.clone());
+        if bands {
+            let first = self.band_incoming.filter(|(index, _)| *index == k).map_or(1, |(_, count)| count.saturating_add(1));
+            parts.extend(
+                heights
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i.saturating_add(1) >= first)
+                    .map(|(i, (_, h))| (i.saturating_add(1), -self.band_spans.get(&(k, i)).copied().unwrap_or(*h))),
+            );
+        }
+        parts.sort_by_key(|(index, _)| *index);
+        parts.dedup_by_key(|(index, _)| *index);
         parts
     }
 
@@ -568,7 +632,38 @@ impl SeriesNotes {
             let (text, m) = parts.get(part).and_then(Clone::clone)?;
             let total = stack_height(ms.iter().chain(std::iter::once(&m)), doc.note_options(self.series).space_between);
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
-                return Some(SplitPlan { remainder: parts.get(heights.len()).is_some_and(Option::is_some), k, heights, pages, text, m, run_in });
+                let mut exclusions = self.carry.as_ref().filter(|c| c.k == k).map_or_else(Vec::new, |c| c.exclusions.clone());
+                if opts.note_bands {
+                    exclusions.push((
+                        part,
+                        column
+                            .frame
+                            .exclusions
+                            .iter()
+                            .map(|e| crate::Exclusion {
+                                rect: e.rect + designcraft_geom::Vec2::new(-column.frame.area.x0, -column.frame.area.y0),
+                                contour: e.contour.as_ref().map(|c| {
+                                    c.clone().transformed(designcraft_geom::Affine::translate((-column.frame.area.x0, -column.frame.area.y0)))
+                                }),
+                                ..e.clone()
+                            })
+                            .collect(),
+                    ));
+                }
+                return Some(SplitPlan {
+                    // A note can start below earlier notes in this band. Its continuation
+                    // translates by its own remaining span, not the whole band's height.
+                    band_span: self.band_span.map(|_| available - offset),
+                    exclusions,
+                    continuations: self.part_continuations(k, &heights, opts.note_bands).into_iter().filter(|(index, _)| *index <= part).collect(),
+                    remainder: parts.get(heights.len()).is_some_and(Option::is_some),
+                    k,
+                    heights,
+                    pages,
+                    text,
+                    m,
+                    run_in,
+                });
             }
             let smaller = h.min(m.last - 0.02);
             if smaller >= h {
@@ -582,9 +677,23 @@ impl SeriesNotes {
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
     pub fn reserve(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> f64 {
         let o = doc.note_options(self.series);
-        let (space_between, space_before) = (o.space_between, o.space_before);
+        let space_between = o.space_between;
         let ms = self.metrics(doc, column, extra, opts);
-        if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before }
+        if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + self.top_space(doc, column, &ms) }
+    }
+
+    fn top_space(&self, doc: &Document, column: NoteColumn<'_>, ms: &[NoteMetrics]) -> f64 {
+        let o = doc.note_options(self.series);
+        match (self.band_previous, ms.first()) {
+            (Some(_), _) if self.band_continued => 0.0,
+            (Some(previous), Some(m)) => previous + o.space_between + m.lead - m.first - column.frame.area.y0,
+            _ => o.space_before,
+        }
+    }
+
+    fn area_space(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> f64 {
+        let ms = self.metrics(doc, column, extra, opts);
+        self.top_space(doc, column, &ms)
     }
 
     pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
@@ -630,11 +739,17 @@ impl SeriesNotes {
 
     fn place_split(&mut self, plan: SplitPlan, column: NoteColumn<'_>) {
         let part = plan.heights.len().saturating_sub(1);
+        if let Some(span) = plan.band_span {
+            self.band_spans.insert((plan.k, part), span);
+            self.cache.clear();
+        }
         self.push(plan.k, part, plan.text, plan.m, column);
         self.carry = plan.remainder.then_some(Carry {
             k: plan.k,
             heights: plan.heights,
             pages: plan.pages,
+            continuations: plan.continuations,
+            exclusions: plan.exclusions,
             fi: column.frame_index,
             col: column.column_index,
             run_in: plan.run_in,

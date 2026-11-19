@@ -66,11 +66,11 @@ impl Notes {
     }
 
     pub fn streams_fit(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], out: &ComposedStory, opts: &ComposeOptions) -> bool {
-        self.streams.fits(doc, column, extra, out, opts)
+        opts.inset_measure || self.streams.fits(doc, column, extra, out, opts)
     }
 
     pub fn finish_streams(&self, doc: &Document, story: &Story, opts: &ComposeOptions, out: &mut ComposedStory) {
-        if !self.nested {
+        if !self.nested && !opts.inset_measure {
             self.streams.finish(doc, story, opts, out);
         }
     }

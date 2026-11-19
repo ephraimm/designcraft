@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{noteStream?: {story, series}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?,gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -1273,12 +1273,16 @@ pub(crate) fn retarget_copied_note_streams(dst: &mut Document, src: &Document, s
     // A route copied without its host becomes an ordinary empty frame rather than referring
     // to an unrelated document-local story id in the destination.
     let copied: std::collections::HashSet<_> = stories.values().copied().collect();
-    let has_routes =
-        dst.placed_items().iter().any(|it| it.text_frame().is_some_and(|tf| copied.contains(&tf.story) && tf.options.note_stream.is_some()));
+    let has_routes = dst.placed_items().iter().any(|it| {
+        it.text_frame().is_some_and(|tf| copied.contains(&tf.story) && (tf.options.note_stream.is_some() || tf.options.inset_columns.is_some()))
+    });
     if has_routes {
         let series = dst.adopt_note_series_ids(src);
         dst.update_placed_items(
-            |it| it.text_frame().is_some_and(|tf| copied.contains(&tf.story) && tf.options.note_stream.is_some()),
+            |it| {
+                it.text_frame()
+                    .is_some_and(|tf| copied.contains(&tf.story) && (tf.options.note_stream.is_some() || tf.options.inset_columns.is_some()))
+            },
             |it| {
                 if let Some(tf) = it.text_frame_mut() {
                     tf.options.note_stream = tf.options.note_stream.and_then(|route| {
@@ -1287,6 +1291,13 @@ pub(crate) fn retarget_copied_note_streams(dst: &mut Document, src: &Document, s
                             series: series.get(&src.note_series_id(route.series)).copied().unwrap_or(0),
                         })
                     });
+                    if let Some(inset) = &mut tf.options.inset_columns {
+                        for stream in &mut inset.streams {
+                            if let Some(id) = &mut stream.series {
+                                *id = series.get(&src.note_series_id(*id)).copied().unwrap_or(0);
+                            }
+                        }
+                    }
                 }
             },
         );
@@ -2872,6 +2883,36 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     if ids.is_empty() {
         return Err(bad(ID, super::NOTHING_SELECTED));
     }
+    let inset_columns = match p.get("insetColumns") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => {
+            let inset: designcraft_doc::InsetColumns = serde_json::from_value(v.clone()).map_err(|e| bad(ID, format!("insetColumns: {e}")))?;
+            if !inset.valid()
+                || inset.streams.iter().filter_map(|s| s.series).any(|id| {
+                    (id != 0 && !st.doc.note_series.iter().any(|s| s.id == id))
+                        || !matches!(st.doc.note_options(id).placement, designcraft_doc::NotePlacement::Stream)
+                })
+            {
+                return Err(bad(
+                    ID,
+                    "insetColumns requires one main stream, unique existing stream series, positive ratios and finite nonnegative distances",
+                ));
+            }
+            for id in &ids {
+                let tf = st.doc.item(*id).and_then(Item::text_frame).ok_or_else(|| bad(ID, "insetColumns requires text frames"))?;
+                if tf.options.note_stream.is_some()
+                    || tf.options.path.is_some()
+                    || p.get("vertical")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(st.doc.frame_vertical(st.doc.item(*id).ok_or_else(|| bad(ID, "missing frame"))?))
+                {
+                    return Err(bad(ID, "insetColumns requires a horizontal main frame"));
+                }
+            }
+            Some(Some(inset))
+        }
+    };
     let note_stream = match p.get("noteStream") {
         None => None,
         Some(Value::Null) => Some(None),
@@ -2893,6 +2934,15 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             Some(Some(stream))
         }
     };
+    for id in &ids {
+        if let Some(tf) = st.doc.item(*id).and_then(Item::text_frame) {
+            let inset = inset_columns.as_ref().map_or(tf.options.inset_columns.as_ref(), |v| v.as_ref());
+            let stream = note_stream.unwrap_or(tf.options.note_stream);
+            if inset.is_some() && stream.is_some() {
+                return Err(bad(ID, "an inset frame cannot also be a separate commentary route"));
+            }
+        }
+    }
     let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => match v.as_f64() {
@@ -2998,6 +3048,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
         for id in &ids {
             let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
             let o = &mut tf.options;
+            o.inset_columns = inset_columns.as_ref().unwrap_or(&o.inset_columns).clone();
             if let Some(stream) = note_stream {
                 o.note_stream = stream;
             }
@@ -7263,6 +7314,46 @@ mod anchored_copy_tests {
 }
 
 #[cfg(test)]
+mod inset_column_options_tests {
+    use super::*;
+    #[test]
+    fn inset_options_validate_atomically_undo_and_clear_deleted_series() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect":[36,36,500,700],"content":"text","text":"Main text"})).unwrap();
+        let id = ItemId(a["id"].as_u64().unwrap());
+        let series = s.execute("footnote.series.create", &json!({"name":"Commentary","placement":"stream"})).unwrap()["id"].as_u64().unwrap();
+        let config = json!({"streams":[{"series":series},{"ratio":2}],"gutter":12,"mainStartLines":10,"mainStartBaseline":6,"mainLeftInset":210,"mainRightInset":162});
+        s.execute("textFrame.options", &json!({"ids":[id.0],"insetColumns":config})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap().main_start_lines, 10);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.is_none());
+        s.execute("edit.redo", &json!({})).unwrap();
+        for config in [
+            json!({"streams":[{},{}]}),
+            json!({"streams":[{"ratio":0}]}),
+            json!({"streams":[{}, {"series":999}]}),
+            json!({"streams":[{}],"mainStartLines":-1}),
+            json!({"streams":[{}],"mainStartBaseline":-1}),
+            json!({"streams":[{}],"mainStartBaseline":65537}),
+        ] {
+            assert!(s.execute("textFrame.options", &json!({"ids":[id.0],"insetColumns":config})).is_err());
+            assert_eq!(s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap().main_start_lines, 10);
+            assert_eq!(
+                s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap().main_start_baseline,
+                Some(6)
+            );
+        }
+        s.execute("footnote.series.delete", &json!({"series":series})).unwrap();
+        let options = s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap();
+        assert_eq!(options.streams.len(), 1);
+        s.doc().unwrap().doc.check().unwrap();
+        s.execute("textFrame.options", &json!({"ids":[id.0],"insetColumns":null})).unwrap();
+        assert!(s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset_columns.is_none());
+    }
+}
+
+#[cfg(test)]
 mod stream_review_tests {
     use super::*;
 
@@ -7414,5 +7505,71 @@ mod stream_review_tests {
         let orphan = duplicate_from(&mut dst, &src, &[route], SpreadRef::Doc(0), Vec2::ZERO).unwrap()[0];
         assert_eq!(dst.item(orphan).unwrap().text_frame().unwrap().options.note_stream, None);
         dst.check().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod inset_review_tests {
+    use super::*;
+
+    #[test]
+    fn inset_options_check_the_requested_direction_atomically() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content": "text", "text": "Main"})).unwrap();
+        let config = json!({"streams": [{}]});
+        assert!(s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": config, "vertical": true})).is_err());
+        s.execute("textFrame.options", &json!({"ids": [frame["id"]], "vertical": true})).unwrap();
+        s.execute("textFrame.options", &json!({"ids": [frame["id"]], "vertical": false, "insetColumns": config})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let item = doc.item(ItemId(frame["id"].as_u64().unwrap())).unwrap();
+        assert!(!doc.frame_vertical(item));
+        assert!(item.text_frame().unwrap().options.inset_columns.is_some());
+    }
+
+    #[test]
+    fn inset_copy_adopts_selectors_even_without_notes() {
+        for with_note in [false, true] {
+            let mut src = Document::new(&Default::default());
+            src.note_series.push(designcraft_doc::NoteSeries {
+                id: 1,
+                name: "Commentary".into(),
+                options: designcraft_doc::FootnoteOptions { placement: designcraft_doc::NotePlacement::Stream, ..Default::default() },
+            });
+            let (id, sid) =
+                src.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 700.0), src.default_layer(), "Main", Default::default()).unwrap();
+            src.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns =
+                Some(serde_json::from_value(json!({"streams": [{}, {"series": 1}], "catchwords": true})).unwrap());
+            if with_note {
+                let note = src.story_mut(sid).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
+                src.story_mut(sid).unwrap().note_mut(note).unwrap().series = 1;
+            }
+            let mut dst = Document::new(&Default::default());
+            dst.note_series.push(designcraft_doc::NoteSeries { id: 1, name: "Unrelated".into(), options: Default::default() });
+            let ids = duplicate_from(&mut dst, &src, &[id], SpreadRef::Doc(0), Vec2::ZERO).unwrap();
+            let tf = dst.item(ids[0]).unwrap().text_frame().unwrap();
+            let config = tf.options.inset_columns.as_ref().unwrap();
+            let mapped = config.streams[1].series.unwrap();
+            assert_ne!(mapped, 1);
+            assert!(config.catchwords);
+            assert!(matches!(dst.note_options(mapped).placement, designcraft_doc::NotePlacement::Stream));
+            if with_note {
+                assert_eq!(dst.story(tf.story).unwrap().notes[0].series, mapped);
+            }
+            dst.check().unwrap();
+        }
+    }
+
+    #[test]
+    fn inset_commentary_overset_is_reported_to_exporters() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36,36,500,160], "content": "text", "text": "Main"})).unwrap();
+        let series = s.execute("footnote.series.create", &json!({"name": "Commentary", "placement": "stream"})).unwrap()["id"].clone();
+        s.execute("text.select", &json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("footnote.insert", &json!({"series": series, "text": "Commentary line.\u{2028}".repeat(100)})).unwrap();
+        s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": {"streams": [{}, {"series": series}]}})).unwrap();
+        let warnings = super::super::preflight::overset_warnings(&s, None);
+        assert!(warnings.iter().any(|s| s.starts_with("Inset commentary remains")), "{warnings:?}");
     }
 }

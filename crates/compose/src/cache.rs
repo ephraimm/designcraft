@@ -337,7 +337,7 @@ impl Cache {
             // Footnote numbers continue from earlier stories.
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            if story.notes.iter().any(|n| !doc.note_options(n.series).placement.is_column_foot()) {
+            if story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {
                 // Another story's margin note can push ours down on their shared page.
                 doc_signature(doc).hash(&mut h);
                 for layer in &doc.layers {
@@ -417,7 +417,16 @@ impl Cache {
         let (mut out, trace) = crate::wrap::compose_among_traced(
             doc,
             sid,
-            &ComposeOptions { page_name, section_marker, page, running: running.clone(), label: None, xrefs: xrefs.clone(), placed: placed.clone() },
+            &ComposeOptions {
+                page_name,
+                section_marker,
+                page,
+                running: running.clone(),
+                label: None,
+                xrefs: xrefs.clone(),
+                placed: placed.clone(),
+                ..Default::default()
+            },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
             before.as_ref().map(|(story, composed, trace)| Reuse { story, composed, trace }),
         );
@@ -487,6 +496,8 @@ impl Cache {
                     && fb.tables.is_empty()
                     && fa.notes.is_empty()
                     && fb.notes.is_empty()
+                    && fa.catchwords.is_empty()
+                    && fb.catchwords.is_empty()
                     && fa.objects.is_empty()
                     && fb.objects.is_empty()
             }) && a.styles == b.styles;

@@ -5602,6 +5602,20 @@ fn idml_warns_before_flattening_streams_and_hidden_references_even_in_series_zer
 }
 
 #[test]
+fn idml_warns_before_separating_effective_run_in_notes() {
+    let mut doc = Document::new(&NewDocument::default());
+    let (_, sid) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 400.0), doc.default_layer(), "Body", Default::default()).unwrap();
+    let id = doc.story_mut(sid).unwrap().insert_note(4, "Source", Default::default()).unwrap();
+    for (series, override_run, expected) in [(false, None, false), (true, None, true), (false, Some(true), true), (true, Some(false), false)] {
+        doc.footnote_options.run_in = series;
+        doc.story_mut(sid).unwrap().note_mut(id).unwrap().run_in = override_run;
+        let (_, warnings) = crate::export_idml_report(&doc, &Default::default());
+        assert_eq!(warnings.iter().any(|w| w.contains("run-in notes")), expected, "{warnings:?}");
+    }
+}
+
+#[test]
 fn idml_warns_before_restoring_hidden_body_labels() {
     let mut doc = Document::new(&NewDocument::default());
     let (_, host) =
@@ -5612,6 +5626,25 @@ fn idml_warns_before_restoring_hidden_body_labels() {
     assert!(warnings.iter().any(|w| w.contains("hidden note body labels")), "{warnings:?}");
     let back = import_idml(&bytes).unwrap();
     assert!(back.stories.values().flat_map(|s| &s.notes).any(|n| n.text.text == "Source"));
+}
+
+#[test]
+fn idml_warns_before_dropping_inset_geometry() {
+    use designcraft_doc::{Document, InsetColumns, InsetStream, SpreadRef, build::NewDocument, geom::Rect};
+    let mut doc = Document::new(&NewDocument::default());
+    let (id, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 700.0), doc.default_layer(), "Main", Default::default()).unwrap();
+    doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns = Some(InsetColumns {
+        streams: vec![InsetStream { series: None, ratio: 1.0 }],
+        gutter: 12.0,
+        main_start_lines: 0,
+        main_start_baseline: None,
+        main_left_inset: None,
+        main_right_inset: None,
+        catchwords: false,
+    });
+    let (_, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("inset-column geometry")));
 }
 
 #[test]

@@ -215,7 +215,7 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
             continue;
         }
         let cs = s.cache.get(d, story.id, None);
-        out.extend(cs.warnings.iter().filter(|warning| warning.starts_with("Stream")).cloned());
+        out.extend(cs.warnings.iter().filter(|warning| warning.starts_with("Stream") || warning.starts_with("Inset ")).cloned());
         if !cs.is_overset() {
             continue;
         }

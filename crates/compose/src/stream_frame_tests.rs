@@ -373,6 +373,17 @@ fn note_options_reflow_cached_cross_reference_pages() {
 }
 
 #[test]
+fn catchword_main_index_excludes_commentary_only_pages() {
+    let (mut doc, host, _) = commentary(3, 1, 22.0);
+    doc.story_mut(host).unwrap().frames.truncate(1);
+    let cs = compose_story(&doc, host, &Default::default());
+    assert!(cs.frames.iter().any(|f| f.range.is_empty() && !f.notes.is_empty()));
+    let words = crate::vars::story_catchwords(&doc, &cs, doc.story(host).unwrap());
+    assert!(!words.contains_key(&1), "commentary frame cannot create a main-source page: {words:?}");
+    assert_eq!(words[&0].1, "");
+}
+
+#[test]
 fn advancing_a_column_foot_carry_does_not_accept_a_rejected_stream_anchor() {
     let (mut doc, host, _) = commentary(5, 0, 140.0);
     let body = format!("Opening.\nReference.{}Next reference.\nClosing.", designcraft_doc::story::FRAME_BREAK);

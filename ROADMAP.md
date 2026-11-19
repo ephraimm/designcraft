@@ -1,9 +1,12 @@
 # DesignCraft roadmap
 
+- **2026-11-19** · Run-in notes build on inset-column layout; delayed main starts count shared physical baselines once. IDML warns when effective run-in notes become separate footnotes.
+
 - **2026-11-19** · Hidden run-in note bodies retain their join separator without numbers in column feet and stream frames.
 
 - **2026-11-19** · Run-in note series and per-note overrides continue comments in one paragraph while retaining anchors, split ranges and editing addresses. Margin reference baselines take precedence. See [run-in notes](docs/run-in-notes.md).
 - **2026-11-18** · Note series can hide the body number and separator with `bodyHidden`, independently of the reference (#2872). Native files retain the option; IDML warns before restoring ordinary footnote labels.
+- **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-11-16: a long footnote continues at the foot of the next column or frame; Allow Split Footnotes (IDML `NoSplitting`) turns it off (#1941).
@@ -15,6 +18,8 @@
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
 - CJK1: IDML composite fonts now retain character mappings and metrics; explicit aki, tsume, jidori, em alignment/leading, named/custom kinsoku boundaries, hanging punctuation, tate-chu-yoko offsets and kenten symbols flow through composition and IDML export. Automatic kerning no longer imports inactive numeric values as enormous manual spacing. Composite definitions are editable through commands with undo/cache invalidation. Mojikumi definitions are retained and unsupported spacing-table / push-in-push-out policies are reported by preflight. Full InDesign CJK composition parity, frame-grid layout and detailed ruby remain unfinished. Warichu sets the selected run in smaller lines inside the line after the line is broken.
+
+- **2026-11-16** · Inset-column frames place main text and commentary above/beside a positioned main block, widen adjacent streams as text ends, and mirror on facing pages (#2873). Whole-line page fitting retains continuous baselines and source ranges; incremental edits re-fit from the affected page. Optional per-stream catchwords follow each stream’s last rectangle; see [inset-columns.md](docs/inset-columns.md). No readiness percentage change.
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
@@ -403,6 +408,11 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-19** · Standalone anchored commentary routes beside inset frames now compose in route order, participate in page fitting and report unplaced tails as story overset (#2873). No readiness percentage change.
+
+- **2026-11-18** · Inset commentary retains notes starting partway down a band, widens to the ended main column's centre axis, and reports final commentary overset. `mainStartBaseline` aligns the first main baseline with a neighbouring commentary baseline (#2873).
+
+- **2026-11-16** · Catchword text variable (`nextPageFirstWord`) follows each story across pages, including multi-stream pages. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
 - **2026-11-15** · Format follow-ups to the craft-libs cutover (craft-libs#778; ported from #2734 by Dylan M. Taylor): IDML export keeps CDATA image contents and table spans such as `inf` reach the table edge; DOCX plain-text import leaves out deleted tracked changes and expands inline objects; an XLSX number cell that isn't a number shows as written; unmarked CMYK JPEGs keep the shared decoder's ink polarity; PPTX export writes exact opacity; PDF export repins craft-pdf and craft-prepress to craft-libs main. No readiness percentage change.

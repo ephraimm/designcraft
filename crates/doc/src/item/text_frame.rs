@@ -57,6 +57,8 @@ pub struct NoteStream {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextFrameOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inset_columns: Option<super::InsetColumns>,
     /// Commentary is composed by the host, independently of this frame's own story.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note_stream: Option<NoteStream>,
@@ -221,6 +223,7 @@ impl Default for TextFrameOptions {
     fn default() -> Self {
         TextFrameOptions {
             note_stream: None,
+            inset_columns: None,
             columns: 1,
             columns_kind: ColumnsKind::FixedNumber,
             gutter: 12.0,
