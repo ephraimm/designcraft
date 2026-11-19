@@ -4,6 +4,11 @@
 
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+- 2026-11-19: the last routed frame of a series uses that series' continuation text at the excerpt end; clearing it removes the terminal catchword (#2869).
+
+- 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).
+
+- 2026-11-19: each note series has an independent `catchwordContinuation`, with command validation, native persistence and an IDML loss warning. Story continuation remains main-stream-only (#2869).
 - 2026-11-19: routed series generate catchwords in their last route frame on a continuing page. Inset followers clear every stream's catchword row; page revisits and copied follower chains preserve routed output (#2873).
 
 - 2026-11-19: inset catchwords accept a character style and reserve rows proportional to its leading, with native persistence and an IDML loss warning (#2873).

@@ -7187,6 +7187,86 @@ mod frame_baseline_grid_tests {
     }
 
     #[test]
+    fn series_terminal_continuation_roundtrips_independently_of_main() {
+        let (mut s, sid, host, _, _) = follow_inset_fixture(36.0, 12.0);
+        let options = s.execute("footnote.series.options", &json!({"series":1,"catchwordContinuation":"Inner terminal"})).unwrap();
+        assert_eq!(options["catchwordContinuation"], "Inner terminal");
+        s.execute("story.options", &json!({"story":sid.0,"catchwordContinuation":"Main terminal"})).unwrap();
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true.into();
+        let loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(loaded.note_options(1)).unwrap()["catchwordContinuation"], "Inner terminal");
+        let cs = designcraft_compose::compose_story(&loaded, sid, &Default::default());
+        let words = &cs.frame(host).unwrap().catchwords;
+        assert_eq!(words.iter().find(|c| c.series.is_none()).unwrap().source.as_ref(), "Main terminal");
+        assert_eq!(words.iter().find(|c| c.series == Some(1)).unwrap().source.as_ref(), "Inner terminal");
+        let (_, warnings) = designcraft_idml::export_idml_report(&loaded, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("series") && w.contains("catchwordContinuation")), "{warnings:?}");
+        for bad in [json!("x".repeat(257)), json!("bad\ntext"), json!(12)] {
+            assert!(s.execute("footnote.series.options", &json!({"series":1,"catchwordContinuation":bad})).is_err());
+        }
+        s.execute("footnote.series.options", &json!({"series":1,"catchwordContinuation":null})).unwrap();
+        let cleared = s.execute("footnote.series.options", &json!({"series":1})).unwrap();
+        assert!(cleared.get("catchwordContinuation").is_none());
+    }
+
+    #[test]
+    fn terminal_continuation_edits_match_fresh_inset_composition() {
+        let (mut s, sid, host, _, _) = follow_inset_fixture(36.0, 12.0);
+        Arc::make_mut(&mut s.doc_mut().unwrap().doc)
+            .item_mut(host)
+            .unwrap()
+            .text_frame_mut()
+            .unwrap()
+            .options
+            .inset_columns
+            .as_mut()
+            .unwrap()
+            .catchwords = true.into();
+        s.cache.get(&s.doc().unwrap().doc, sid, None);
+        let rows = |cs: &designcraft_compose::ComposedStory| {
+            cs.frames
+                .iter()
+                .map(|f| {
+                    (
+                        f.frame,
+                        f.range.clone(),
+                        f.columns.clone(),
+                        f.catchwords.iter().map(|c| (c.series, c.source.to_string(), c.rect)).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (command, target) in [("story.options", json!({"story":sid.0})), ("footnote.series.options", json!({"series":1}))] {
+            for value in [json!("Following excerpt"), Value::Null] {
+                let mut params = target.clone();
+                params["catchwordContinuation"] = value;
+                s.execute(command, &params).unwrap();
+                let doc = &s.doc().unwrap().doc;
+                let warm = s.cache.get(doc, sid, None);
+                let fresh = designcraft_compose::compose_story(doc, sid, &Default::default());
+                assert_eq!(rows(&warm), rows(&fresh), "{command} {params}");
+            }
+        }
+    }
+
+    #[test]
+    fn routed_terminal_continuation_uses_series_source() {
+        let (mut s, sid, host, _, foot) = follow_inset_fixture(36.0, 12.0);
+        s.execute("story.options", &json!({"story":sid.0,"catchwordContinuation":"Main terminal"})).unwrap();
+        s.execute("footnote.series.options", &json!({"series":2,"catchwordContinuation":"Route terminal"})).unwrap();
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true.into();
+        let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
+        assert!(!cs.is_overset(), "{:?}", cs.warnings);
+        let words = &cs.frame(foot).unwrap().catchwords;
+        assert_eq!(words.iter().find(|c| c.series == Some(2)).map(|c| c.source.as_ref()), Some("Route terminal"));
+        s.execute("footnote.series.options", &json!({"series":2,"catchwordContinuation":null})).unwrap();
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!(cs.frame(foot).unwrap().catchwords.is_empty());
+    }
+
+    #[test]
     fn follow_inset_after_chains_and_shorter_route_moves_it_up() {
         let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
         s.execute("textFrame.options", &json!({"ids":[column.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"start","gap":0}}}))
@@ -7283,14 +7363,27 @@ mod frame_baseline_grid_tests {
     }
 
     #[test]
-    fn same_page_second_host_route_survives_canvas_and_pdf_export() {
+    fn returned_page_host_route_survives_canvas_and_pdf_export() {
         let mut s = Session::new();
-        s.execute("file.new", &json!({"facingPages":false})).unwrap();
+        s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
         let text = format!("{}Last reference.", "Main line.\n".repeat(20));
         let first = s.execute("frame.create", &json!({"rect":[36,36,300,120],"content":"text","text":text})).unwrap();
         let second = s.execute("frame.create", &json!({"rect":[310,36,570,500],"content":"text"})).unwrap();
-        Arc::make_mut(&mut s.doc_mut().unwrap().doc).thread(ItemId(first["id"].as_u64().unwrap()), ItemId(second["id"].as_u64().unwrap())).unwrap();
-        s.execute("textFrame.options", &json!({"ids":[first["id"],second["id"]],"insetColumns":{"streams":[{}]}})).unwrap();
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let (si, pi) = doc.page_loc(1).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (middle, _) = doc
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(si),
+                designcraft_geom::Rect::new(x + 36.0, 36.0, x + 300.0, 120.0),
+                doc.default_layer(),
+                "",
+                Default::default(),
+            )
+            .unwrap();
+        doc.thread(ItemId(first["id"].as_u64().unwrap()), middle).unwrap();
+        doc.thread(middle, ItemId(second["id"].as_u64().unwrap())).unwrap();
+        s.execute("textFrame.options", &json!({"ids":[first["id"],middle.0,second["id"]],"insetColumns":{"streams":[{}]}})).unwrap();
         let series = s.execute("footnote.series.create", &json!({"name":"Route","placement":"stream","refHidden":true})).unwrap()["id"].clone();
         s.execute("text.select", &json!({"story":first["story"],"anchor":text.find("Last").unwrap(),"focus":text.find("Last").unwrap()})).unwrap();
         s.execute("footnote.insert", &json!({"series":series,"text":"Visible routed note."})).unwrap();

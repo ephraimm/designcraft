@@ -111,6 +111,9 @@ and state, accepted regions and note placements. A text or formatting edit resum
 first affected page. Re-fitting stops when the outgoing cut and continuation state rejoin the
 stored trace and the remaining main text and formatting are unchanged. A changed note is
 followed through its remaining continuation before rejoining.
+Changing or clearing story continuation text invalidates the inset page trace. Series
+continuation edits invalidate the cache's note-option dependency signature, so both paths
+produce the same geometry and catchwords as a fresh composition.
 
 Native saves retain the options. PDF and raster export use the composed regions. IDML cannot
 retain inset geometry and emits an explicit export warning. Deleting a series removes its
@@ -125,8 +128,12 @@ and colour at 9 points; a long word shrinks uniformly to fit its column. Alterna
 1.5 times its leading. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
 remain valid in commands and native files. IDML warns that it loses styled catchwords.
-Ended and overset
-streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
+`story.options {story,catchwordContinuation:"Next excerpt"}` supplies only the main stream's
+terminal catchword. Each note series has its own optional text, set through
+`footnote.series.create` or `footnote.series.options {series,catchwordContinuation:"Next comment"}`.
+Both accept at most 256 characters without control characters; `null` clears the value.
+Native saves preserve both fields. IDML warns that it loses terminal catchword text.
+Without continuation text, ended streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 
 `story.options {story, catchwordContinuation:"word"}` supplies the main stream's final excerpt
@@ -138,7 +145,8 @@ Terminal inset catchwords reserve the same row as catchwords sourced from a foll
 Visible source is indexed once per stream and page for both inset and text-variable consumers.
 The host's catchword setting also applies to routed series. Only the last route frame of
 each series on a page reserves the bottom row. Its word comes from that series' next
-visible page; a finished series has no catchword. Side notes outside a stream's horizontal
+visible page, or from its own `catchwordContinuation` at the excerpt end. A finished series
+without continuation text has no catchword. Side notes outside a stream's horizontal
 range do not lower its catchword row. Followers clear every inset stream's catchword row.
 
 A separate text-variable frame can use
