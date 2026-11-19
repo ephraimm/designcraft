@@ -108,7 +108,7 @@ pub(crate) struct NoteColumn<'a> {
 
 /// The page, spread or section a reference on absolute page `page` counts in (none when numbering
 /// never restarts, or when the frame is on no page).
-fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
+pub(crate) fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
     let p = page?;
     match doc.footnote_options.restart {
         NoteRestart::Never => None,
@@ -203,6 +203,16 @@ pub struct NoteNumber {
     pub key: Option<usize>,
 }
 type CacheKey = (NoteSource, String, u64, PartPage, Vec<(u64, u64, PartPage)>, Option<(usize, u64, bool)>);
+
+impl NoteNumber {
+    /// Continue this count on `page`, restarting when its page, spread or section changes.
+    pub fn at_page(self, doc: &Document, page: Option<usize>) -> Self {
+        match restart_key(doc, page) {
+            Some(key) if self.key != Some(key) => Self { num: doc.footnote_options.start_at, key: Some(key) },
+            _ => self,
+        }
+    }
+}
 
 fn append_note(notes: &mut Vec<PlacedNote>, note: PlacedNote) {
     if note.text.frames.first().and_then(|f| f.lines.first()).is_some_and(|l| !l.first_in_para)

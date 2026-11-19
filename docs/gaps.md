@@ -1,10 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-16 · **Change:** minor (gap 7 closed: pull-request quality gate already runs; linked placed images and multi-image place; gap 20: automatic recovery moved off the interface thread; gap 21 shrunk: pt-BR translates the whole interface; placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
-
-### Footnote layout
-- **Have:** independent balanced note columns and gutter, with spanning areas and a narrow-area fallback (#1120).
-
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-16 · **Change:** minor (gap 12 shrunk: cell notes share column-foot placement and story numbering (#2611, #2612); gap 7 closed: pull-request quality gate already runs; linked placed images and multi-image place; gap 20: automatic recovery moved off the interface thread; gap 21 shrunk: pt-BR translates the whole interface; placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -169,8 +165,8 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
   (#20).
 - **Have:** table-cell footnotes continue the host story's numbering in logical reading order,
   including RTL and nested tables (#2612), and print at the column foot with body notes (#2611).
-- **Limit:** page/spread/section restarts use the table's pre-pagination page for every cell when a
-  table breaks across pages; numbering per placed row fragment remains open.
+- **Limit:** repeated footer notes number from their last page but print on first appearance;
+  numbering and pagination settle for at most three passes.
 
 ### Footnote layout
 - **Have:** independent balanced note columns and gutter, with spanning areas and a narrow-area fallback (#1120).
@@ -311,9 +307,9 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | Gap 12: table-cell notes share the column foot and the story's numbering sequence; cell-note editing remains open (#2611, #2612) |
 | 2026-11-15 | trivial | Gap 7 closed: the quality gate already runs on every pull request and push to main (#1352) |
 | 2026-11-14 | minor | Gaps 19 and 20 shrunk: placed files are linked with proxies and a hash (save format 5); multi-image place cursor, grid and contact sheet |
-| 2026-11-13 | minor | Gap 12: table-cell notes share the column foot and the story's numbering sequence; cell-note editing remains open (#2611, #2612) |
 
 ### Footnote layout
 - **Have:** independent balanced note columns and gutter, with spanning areas and a narrow-area fallback (#1120).
