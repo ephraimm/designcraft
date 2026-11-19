@@ -104,7 +104,9 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
     if any_footnote(doc, |note| doc.note_options(note.series).body_hidden) {
         ex.warnings.push("IDML cannot retain hidden note body labels; notes are exported with ordinary footnote numbers and separators.".into());
     }
-    let unsupported = |p: &ParaAttrs| p.drop_cap_words.is_some_and(|v| v > 0) || p.drop_cap_offset.is_some_and(|v| v != 0.0);
+    let unsupported = |p: &ParaAttrs| {
+        p.drop_cap_words.is_some_and(|v| v > 0) || p.drop_cap_offset.is_some_and(|v| v != 0.0) || p.drop_cap_scale.is_some_and(|v| v != 0.0)
+    };
     let mut pending: Vec<&Story> = doc.stories.values().map(AsRef::as_ref).collect();
     let mut seen = HashSet::new();
     let mut drop_loss = doc.styles.paragraph.iter().any(|s| unsupported(&s.para));
@@ -117,7 +119,7 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
         pending.extend(story.notes.iter().chain(&story.endnotes).map(|n| &n.text));
     }
     if drop_loss {
-        ex.warnings.push("IDML cannot retain word drop caps or drop cap offsets; export PDF to preserve their placement.".into());
+        ex.warnings.push("IDML cannot retain word drop caps, drop cap offsets or drop cap scale; export PDF to preserve their placement.".into());
     }
     let parts = ex.build();
     (zip_parts(&parts), ex.warnings)
