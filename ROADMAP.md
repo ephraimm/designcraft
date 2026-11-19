@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-19** · Run-in note headings move to the next line when their glyphs would overlap the predecessor or consume its separator space, in RTL and LTR text.
+
 - **2026-11-19** · Run-in notes build on inset-column layout; delayed main starts count shared physical baselines once. IDML warns when effective run-in notes become separate footnotes.
 
 - **2026-11-19** · Hidden run-in note bodies retain their join separator without numbers in column feet and stream frames.

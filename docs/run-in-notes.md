@@ -30,5 +30,7 @@ separate areas; the document-wide margin pass displaces a joined group together.
 Explicit paragraph keeps and required column/frame/page starts also take precedence
 and start a paragraph. Table anchors retain their separate paragraphs and table ids.
 An unbreakable first word moves to the next line when the preceding line has
-insufficient room. Anchor ordering, same-page starts and overflow reporting
+insufficient room, including when its glyphs would cross the predecessor's end
+and separator advance. The separator is omitted on that fresh line.
+Anchor ordering, same-page starts and overflow reporting
 continue to apply independently to every note.
