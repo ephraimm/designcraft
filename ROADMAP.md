@@ -4,6 +4,12 @@
 
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+- **2026-11-19** · Commentary routes can end a column at the composed inset core or start a foot below it with `noteStream.followInset`; geometry participates in page fitting and follows text edits (#2873).
+
+- **2026-11-19** · Inset cut search verifies unproved larger keys within its trial budget and warns when verification cannot finish (#2873).
+
+- **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).
+
 - **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.
 - **2026-11-19** · Hidden run-in note bodies retain their join separator without numbers in column feet and stream frames.
 

@@ -77,7 +77,8 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
     let mut routes = Vec::new();
     for rect in [Rect::new(640.0, 36.0, 670.0, 36.0 + height), Rect::new(36.0, 600.0, 636.0, 600.0 + height)] {
         let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), rect, doc.default_layer(), "", Default::default()).unwrap();
-        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: sid, series: 2 });
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, follow_inset: None });
         routes.push(id);
     }
     let story = doc.story_mut(sid).unwrap();
@@ -86,6 +87,20 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
         story.note_mut(id).unwrap().series = 2;
     }
     (doc, sid, routes)
+}
+
+#[test]
+fn inset_preserves_unplaced_column_footnote_overset() {
+    let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
+    let text = "Unplaced column footnote line.\n".repeat(150);
+    doc.story_mut(sid).unwrap().insert_note(17, &text, Default::default()).unwrap();
+    let cs = compose_story(&doc, sid, &Default::default());
+    let story = doc.story(sid).unwrap();
+    assert_eq!(cs.frames.iter().map(|f| f.range.end).max(), Some(story.len()));
+    let parts: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.series == 0).collect();
+    assert!(!parts.is_empty(), "the column-foot note must start");
+    assert!(parts.iter().flat_map(|n| &n.text.frames).map(|f| f.range.end).max().unwrap() < text.len());
+    assert!(cs.is_overset(), "unplaced column-foot continuation must report overset");
 }
 
 #[test]

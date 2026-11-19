@@ -47,18 +47,45 @@ Paragraph keeps treat same-page bands as one logical column; real page and colum
 retain their keep constraints.
 
 Commentary left after the final frame sets the same story overset signal used by document
-inspection and preflight, even when all main text fits.
+inspection and preflight, even when all main text fits. An unplaced column-footnote
+continuation also retains that signal after the accepted page slices are replayed.
 
 A stream series outside the inset's stream list can use standalone `noteStream` frames.
 Anchors feed the route on their page, in frame order, so a narrow column can continue into
 a full-width foot frame. These routes participate in the same page trials and retain their
 continuations independently of inset bands. Unplaced route commentary also sets story overset.
 
+A route can follow the composed inset core on its host's page:
+
+```json
+{"noteStream":{"story":23,"series":2,"followInset":{"edge":"start","gap":12}}}
+```
+
+The core bottom is the greatest line baseline plus descent among the inset main text and
+commentary. `edge:"end"` caps the route's bottom at core bottom plus gap; `edge:"start"`
+raises its top to at least that position, keeping its bottom. The frame's original area
+limits both adjustments. Set the foot frame's original top high enough to allow it to follow
+a shorter core upward. Each candidate page trial composes routes with these adjusted areas,
+and the final composed columns retain them. Closed areas place no text; notes continue into
+the next route area or report overset. A page without a host inset frame keeps the original
+route area. `gap` must be finite and within 0..15552 points. Invalid gaps are rejected by
+commands and the follow option is dropped on native load. Native round trips preserve valid
+options; IDML warns that it cannot retain `followInset` geometry.
+
+Following is measured in spread space. The host's transform maps its local core bottom into
+spread space; after adding `gap` in spread-space points, the route's inverse transform maps
+that edge into its local text area. Translation and positive axis-aligned scaling are supported,
+including containing-group transforms. Rotation, skew, or flipping on either frame makes
+`followInset` a no-op for that route and adds a composition warning.
+
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming
 feasibility is monotone. Search plus the progress probe has a budget of ceil(log2(keys)) + 2
 probes. The full-page key is tried first so nonmonotone feasibility cannot hide a full-page fit.
+After the midpoint search accepts a cut, remaining larger keys are checked in descending
+order within the same budget. If verification cannot finish, composition retains the best
+proven cut and reports a trial-budget warning.
 Each probe may re-lay once to resolve its whole-line cut. An incoming commentary tail
 may take a page with no main text only when it shrinks. An impossible start can overflow only
 on the actual first main line; later anchors move with their main text.

@@ -68,6 +68,22 @@ fn main_layout(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &Compo
     crate::compose(doc, story, frames, &main_options(opts, frames))
 }
 
+/// Local text y -> spread y. Slanted or flipped axes cannot express a horizontal follow edge.
+fn frame_y_transform(doc: &Document, id: designcraft_doc::ItemId) -> Option<(f64, f64)> {
+    let loc = doc.find(id)?;
+    let item = doc.item_at(&loc)?;
+    let [sx, b, c, sy, tx, ty] = (doc.parent_xf(&loc) * doc.text_xf(item)).as_coeffs();
+    (b == 0.0 && c == 0.0 && sx > 0.0 && sy > 0.0 && [sx, b, c, sy, tx, ty].iter().all(|n| n.is_finite())).then_some((sy, ty))
+}
+
+fn route_edge(doc: &Document, host: designcraft_doc::ItemId, route: designcraft_doc::ItemId, bottom: f64, gap: f64) -> Option<f64> {
+    let (host_scale, host_y) = frame_y_transform(doc, host)?;
+    let (route_scale, route_y) = frame_y_transform(doc, route)?;
+    // Add the gap in spread points, then apply the route's axis-aligned inverse.
+    let edge = (bottom * host_scale + host_y + gap - route_y) / route_scale;
+    edge.is_finite().then_some(edge)
+}
+
 fn fit_routes(
     doc: &Document,
     story: &Story,
@@ -121,10 +137,11 @@ fn search<T>(
     keys: &[usize],
     budget: usize,
     mut probe: impl FnMut(usize) -> Result<(usize, bool, T), super::Error>,
-) -> Result<(Option<T>, usize), super::Error> {
+) -> Result<(Option<T>, usize, bool), super::Error> {
     let (mut lo, mut hi) = (0, keys.len());
     let mut best: Option<(usize, T)> = None;
     let mut used = 0;
+    let mut proved = Vec::new();
     // Widening and run-in joins make feasibility nonmonotone. Keep a full-page
     // success before a failed midpoint can exclude it from the bounded search.
     if budget > 0
@@ -132,19 +149,22 @@ fn search<T>(
     {
         let (cut, feasible, trial) = probe(key)?;
         used += 1;
+        proved.push(key);
         hi = hi.saturating_sub(1);
         if feasible {
             if cut == key {
-                return Ok((Some(trial), used));
+                return Ok((Some(trial), used, false));
             }
             best = Some((cut, trial));
         }
     }
-    while lo < hi && used < budget {
+    // Reserve the final trial for progress if no cut fits, or verification if one does.
+    while lo < hi && used < budget.saturating_sub(1) {
         let mid = lo + (hi - lo) / 2;
         let Some(&key) = keys.get(mid) else { break };
         let (cut, feasible, trial) = probe(key)?;
         used += 1;
+        proved.push(key);
         if feasible {
             if best.as_ref().is_none_or(|(previous, _)| cut > *previous) {
                 best = Some((cut, trial));
@@ -154,7 +174,27 @@ fn search<T>(
             hi = mid;
         }
     }
-    Ok((best.map(|(_, trial)| trial), used))
+    // A failed midpoint cannot rule out larger keys when feasibility is nonmonotone.
+    let mut exhausted = false;
+    for &key in keys.iter().rev() {
+        let Some((cut, _)) = &best else { break };
+        if key <= *cut {
+            break;
+        }
+        if proved.contains(&key) {
+            continue;
+        }
+        if used >= budget {
+            exhausted = true;
+            break;
+        }
+        let (cut, feasible, trial) = probe(key)?;
+        used += 1;
+        if feasible && best.as_ref().is_none_or(|(previous, _)| cut > *previous) {
+            best = Some((cut, trial));
+        }
+    }
+    Ok((best.map(|(_, trial)| trial), used, exhausted))
 }
 
 struct Page<'a> {
@@ -259,7 +299,7 @@ impl Page<'_> {
                         self.frame.area.y1,
                     ),
                 );
-                area.opts.note_stream = Some(NoteStream { story: self.story.id, series });
+                area.opts.note_stream = Some(NoteStream { story: self.story.id, series, follow_inset: None });
                 let fit = crate::notes::fit_stream_page_for(
                     self.doc,
                     self.story,
@@ -345,7 +385,7 @@ impl Page<'_> {
                 }
             }
             if let Some(series) = series {
-                f.opts.note_stream = Some(NoteStream { story: self.story.id, series });
+                f.opts.note_stream = Some(NoteStream { story: self.story.id, series, follow_inset: None });
             } else if future && bottom {
                 f.area.y1 = (f.area.y1 - CATCHWORD_SPACE).max(f.area.y0);
             }
@@ -446,6 +486,22 @@ impl Page<'_> {
             feasible &= !s.cursor.tail_pending;
         }
         let mut warnings: Vec<_> = out.streams.iter().flat_map(|s| s.cursor.warnings.iter().cloned()).collect();
+        let follows_core = self.routes.iter().any(|f| f.page == self.frame.page && f.opts.note_stream.is_some_and(|s| s.follow_inset.is_some()));
+        let core_bottom = self.frame.opts.inset_columns.as_ref().filter(|_| follows_core).map(|_| {
+            let mut all = self.past.to_vec();
+            all.extend(c.areas.iter().cloned());
+            let replay = main_layout(self.doc, self.story, &all, self.opts);
+            replay
+                .frames
+                .iter()
+                .filter(|f| f.frame == self.frame.id)
+                .flat_map(|f| &f.lines)
+                .map(|line| line.baseline + line.descent)
+                .chain(out.parts.iter().flat_map(|p| &p.placement.notes).flat_map(|note| {
+                    note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent))
+                }))
+                .fold(self.frame.area.y0, f64::max)
+        });
         let mut routes = Vec::new();
         let page = self.frame.page.unwrap_or(0);
         let previous = self.past.last().and_then(|f| f.page);
@@ -456,9 +512,27 @@ impl Page<'_> {
         if !route_pages.contains(&page) && !self.routes.is_empty() {
             route_pages.push(page);
         }
-        // Standalone routes share the candidate main cut, but never the inset's band geometry.
+        // Route feasibility uses the candidate's ink bottom, before accepting its main cut.
         for route_page in route_pages {
-            let areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(route_page)).cloned().collect();
+            let mut areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(route_page)).cloned().collect();
+            if route_page == page
+                && let Some(bottom) = core_bottom
+            {
+                for area in &mut areas {
+                    let Some(follow) = area.opts.note_stream.and_then(|s| s.follow_inset).filter(|f| f.valid()) else { continue };
+                    let Some(edge) = route_edge(self.doc, self.frame.id, area.id, bottom, follow.gap) else {
+                        warnings.push(format!(
+                            "followInset ignored on frame {}: host and route transforms must allow finite translation and positive axis-aligned scaling",
+                            area.id
+                        ));
+                        continue;
+                    };
+                    match follow.edge {
+                        designcraft_doc::InsetEdge::End => area.area.y1 = area.area.y1.min(edge).max(area.area.y0),
+                        designcraft_doc::InsetEdge::Start => area.area.y0 = area.area.y0.max(edge).min(area.area.y1),
+                    }
+                }
+            }
             let fit = fit_routes(
                 self.doc,
                 self.story,
@@ -515,11 +589,17 @@ impl Page<'_> {
             return self.trial(self.start, false);
         }
         let budget = if keys.is_empty() { 2 } else { usize::BITS as usize - keys.len().saturating_sub(1).leading_zeros() as usize + 2 };
-        let (best, _) = search(&keys, budget.saturating_sub(1), |key| {
+        let (best, _, exhausted) = search(&keys, budget, |key| {
             let trial = self.probe(key, false)?;
             Ok((trial.cut, trial.feasible && trial.cut > self.start, trial))
         })?;
-        if let Some(best) = best {
+        if let Some(mut best) = best {
+            if exhausted {
+                best.warnings.push(format!(
+                    "Inset cut verification exhausted the trial budget on page {}; retaining the best proven cut",
+                    self.frame.page.unwrap_or(0).saturating_add(1)
+                ));
+            }
             return Ok(best);
         }
         self.progress_probe()
@@ -847,7 +927,7 @@ pub(crate) fn compose_frames(
         warnings.push("Inset commentary remains after the final frame".into());
     }
     out.frames = merged;
-    out.overset_at = (start < story.text.len() || commentary_overset).then_some(start);
+    out.overset_at = out.overset_at.or((start < story.text.len() || commentary_overset).then_some(start));
     out.warnings.extend(warnings);
     let catchwords: Vec<_> = pages.iter().map(|p| p.catchwords.clone()).collect();
     super::catchwords::place(doc, story, &mut out, frames, &catchwords);
@@ -858,9 +938,49 @@ pub(crate) fn compose_frames(
 mod search_tests {
     use super::*;
     #[test]
+    fn interior_nonmonotone_fit_checks_larger_unproved_keys_within_budget() {
+        let mut probes = Vec::new();
+        let (best, used, exhausted) = search(&[1, 2, 3, 4, 5, 6, 7], 5, |key| {
+            probes.push(key);
+            Ok((key, key == 2 || key == 6, key))
+        })
+        .unwrap();
+        assert!(used <= 5);
+        assert_eq!(used, probes.len());
+        assert_eq!(best, Some(6), "probed {probes:?}");
+        assert!(!exhausted);
+    }
+    #[test]
+    fn verification_budget_exhaustion_keeps_the_best_proven_cut() {
+        let mut probes = Vec::new();
+        let (best, used, exhausted) = search(&[1, 2, 3, 4, 5, 6, 7], 5, |key| {
+            probes.push(key);
+            Ok((key, key == 2 || key == 5, key))
+        })
+        .unwrap();
+        assert_eq!(best, Some(2));
+        assert_eq!(used, 5);
+        assert_eq!(probes, [7, 4, 2, 3, 6]);
+        assert!(exhausted);
+    }
+    #[test]
+    fn verification_proves_all_larger_failures_without_repeating_probes() {
+        let mut probes = Vec::new();
+        let (best, used, exhausted) = search(&[1, 2, 3, 4, 5, 6, 7], 6, |key| {
+            probes.push(key);
+            Ok((key, key == 2, key))
+        })
+        .unwrap();
+        assert_eq!(best, Some(2));
+        assert_eq!(used, 6);
+        assert_eq!(probes, [7, 4, 2, 3, 6, 5]);
+        assert!(!exhausted);
+    }
+    #[test]
     fn full_page_fit_survives_nonmonotone_feasibility() {
-        let (best, _) = search(&[1, 2, 3, 4, 5], 4, |key| Ok((key, key == 1 || key == 5, key))).unwrap();
+        let (best, _, exhausted) = search(&[1, 2, 3, 4, 5], 4, |key| Ok((key, key == 1 || key == 5, key))).unwrap();
         assert_eq!(best, Some(5));
+        assert!(!exhausted);
     }
     #[test]
     fn catchword_row_is_committed_once_and_can_wait_for_a_wider_band() {
@@ -882,7 +1002,7 @@ mod search_tests {
             let keys: Vec<_> = (1..=count).collect();
             let budget = usize::BITS as usize - count.saturating_sub(1).leading_zeros() as usize + 2;
             let mut measured = Vec::new();
-            let (best, used) = search(&keys, budget, |key| {
+            let (best, used, _) = search(&keys, budget, |key| {
                 let feasible = key % 3 != 0;
                 measured.push((key, feasible));
                 Ok((key, feasible, key))
