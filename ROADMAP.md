@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-20** · Commentary replay retains disjoint visits when a text thread returns to a page, so each comment appears once on its anchor page (#2872).
+
 - **2026-11-18** · Note series can hide the body number and separator with `bodyHidden`, independently of the reference (#2872). Native files retain the option; IDML warns before restoring ordinary footnote labels.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)

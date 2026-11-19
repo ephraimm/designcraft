@@ -35,13 +35,13 @@ fn respects_keeps(plan: &super::SplitPlan) -> bool {
 
 pub struct StreamPageInput<'a> {
     pub page: usize,
-    /// Bytes of main text actually placed by the caller's candidate page layout.
-    pub main: Range<usize>,
+    /// Disjoint main-text ranges actually placed by the caller's candidate page layout.
+    pub main: Vec<Range<usize>>,
     /// This page's stream areas, each naming its host and series in `note_stream`.
     pub areas: &'a [FrameSpec],
     /// The page's first main line, when progress needs an impossible comment to overflow.
-    /// Only anchors in this range may overflow instead of moving through every later page.
-    pub force_starts: Option<Range<usize>>,
+    /// Only anchors in these ranges may overflow instead of moving through every later page.
+    pub force_starts: Vec<Range<usize>>,
 }
 
 pub struct StreamPageFit {
@@ -93,8 +93,15 @@ pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>
                 *number = previous.carry_number;
             }
         }
-        notes.number_refs(doc, input.main.clone(), Some(input.page), &mut SubstCtx::default());
-        let anchors: Vec<_> = notes.refs.iter().enumerate().filter_map(|(k, at)| (notes.owns(k) && input.main.contains(at)).then_some(k)).collect();
+        for range in &input.main {
+            notes.number_refs(doc, range.clone(), Some(input.page), &mut SubstCtx::default());
+        }
+        let anchors: Vec<_> = notes
+            .refs
+            .iter()
+            .enumerate()
+            .filter_map(|(k, at)| (notes.owns(k) && input.main.iter().any(|range| range.contains(at))).then_some(k))
+            .collect();
         let had_carry = notes.carry.is_some();
         let mut next = 0;
         for (fi, frame) in input.areas.iter().enumerate().filter(|(_, f)| f.opts.note_stream.is_some_and(|s| s.series == series)) {
@@ -122,7 +129,7 @@ pub fn fit_stream_page(doc: &Document, story: &Story, input: StreamPageInput<'_>
                             notes.split_plan(doc, column, &[k], room - doc.note_options(series).space_before, opts).filter(respects_keeps)
                     {
                         notes.place_line(doc, column, &[k], Some(plan), opts);
-                    } else if !had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.as_ref().is_some_and(|range| range.contains(at))) {
+                    } else if !had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.iter().any(|range| range.contains(at))) {
                         notes.place(doc, k, column, opts);
                         if let Some(note) = story.notes.get(k) {
                             result.warnings.push(format!(
@@ -238,8 +245,9 @@ impl StreamComposer {
         let mut fits = Vec::new();
         for page in pages.into_iter().filter(|p| until.is_none_or(|limit| *p <= limit)) {
             let ranges: Vec<_> = anchors.iter().filter(|a| a.page == page).collect();
-            let main = ranges.iter().map(|a| a.range.clone()).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end)).unwrap_or(0..0);
-            let force_starts = ranges.iter().filter(|a| a.forced).map(|a| a.range.clone()).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end));
+            // A thread can leave this page and return; the bytes between visits belong elsewhere.
+            let main = ranges.iter().map(|a| a.range.clone()).collect();
+            let force_starts = ranges.iter().filter(|a| a.forced).map(|a| a.range.clone()).collect();
             let areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
             let fit = fit_stream_page(doc, story, StreamPageInput { page, main, areas: &areas, force_starts }, &state, opts);
             state = fit.state.clone();
