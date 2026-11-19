@@ -5506,7 +5506,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             let pt = |k: &str| d.pt(k).map_or(Value::Null, |v| json!(v));
             let mut p = json!({
                 "style": d.s("style"), "startAt": d.n("startAt").unwrap_or(1.0).max(0.0) as u32, "restart": d.s("restart"),
-                "prefix": d.s("prefix"), "suffix": d.s("suffix"), "affixIn": d.s("affixIn"), "refPosition": d.s("refPosition"),
+                "prefix": d.s("prefix"), "suffix": d.s("suffix"), "affixIn": d.s("affixIn"), "bodyHidden": d.b("bodyHidden"), "refPosition": d.s("refPosition"),
                 "refCharStyle": d.s("refCharStyle"), "paraStyle": d.s("paraStyle"),
                 "separator": d.s("separator").replace("^t", "\t").replace("^m", "\u{2003}").replace("^>", "\u{2002}"),
                 "spaceBefore": pt("spaceBefore"), "spaceBetween": pt("spaceBetween"), "runIn": d.b("runIn"), "runInSeparator": d.s("runInSeparator"), "firstBaseline": d.s("firstBaseline"),
@@ -8752,6 +8752,7 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         text_field(ui, d, "separator", 60.0);
         ui.end_row();
     });
+    check(ui, d, "bodyHidden", crate::i18n::tr(&app.ui.language, "Hide Number in Note Text"));
 }
 
 /// One parameter of a command, parsed from its params documentation

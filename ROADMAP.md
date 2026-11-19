@@ -1,6 +1,9 @@
 # DesignCraft roadmap
 
+- **2026-11-19** · Hidden run-in note bodies retain their join separator without numbers in column feet and stream frames.
+
 - **2026-11-19** · Run-in note series and per-note overrides continue comments in one paragraph while retaining anchors, split ranges and editing addresses. Margin reference baselines take precedence. See [run-in notes](docs/run-in-notes.md).
+- **2026-11-18** · Note series can hide the body number and separator with `bodyHidden`, independently of the reference (#2872). Native files retain the option; IDML warns before restoring ordinary footnote labels.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-11-16: a long footnote continues at the foot of the next column or frame; Allow Split Footnotes (IDML `NoSplitting`) turns it off (#1941).

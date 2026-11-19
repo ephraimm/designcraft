@@ -296,7 +296,11 @@ impl SeriesNotes {
             }
             Some(_) | None => String::new(),
         };
-        let label = format!("{}{}{}", separator, o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator);
+        let label = if o.body_hidden {
+            separator.clone()
+        } else {
+            format!("{}{}{}", separator, o.label(self.numbers.get(k).copied().unwrap_or(o.start_at), true), o.separator)
+        };
         // Parent frames have no page index: their prefix and section context must also distinguish cached text.
         let current_page = PartPage::of(f);
         let key = (
@@ -338,7 +342,7 @@ impl SeriesNotes {
             section_marker: opts.section_marker.clone(),
             page: opts.page,
             running: opts.running.clone(),
-            label: Some(label),
+            label: (!label.is_empty()).then_some(label),
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
         };
