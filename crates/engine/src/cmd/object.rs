@@ -7263,7 +7263,7 @@ mod frame_baseline_grid_tests {
         s.execute("footnote.series.options", &json!({"series":2,"catchwordContinuation":"Route terminal"})).unwrap();
         let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
         doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true.into();
-        doc.item_mut(foot).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().catchword = true;
+        doc.item_mut(foot).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().catchword = true.into();
         let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
         assert!(!cs.is_overset(), "{:?}", cs.warnings);
         let words = &cs.frame(foot).unwrap().catchwords;

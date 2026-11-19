@@ -132,19 +132,14 @@ preceding line's descent and ends at the catchword's descent. Boolean `true` ret
 the existing placement and 18-point row. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
 remain valid in commands and native files. IDML warns that it loses styled catchwords.
-<<<<<<< HEAD
+Host, route and series catchword style references follow character-style rename and
+delete-with-replacement, including undo.
 `story.options {story,catchwordContinuation:"Next excerpt"}` supplies only the main stream's
 terminal catchword. Each note series has its own optional text, set through
 `footnote.series.create` or `footnote.series.options {series,catchwordContinuation:"Next comment"}`.
 Both accept at most 256 characters without control characters; `null` clears the value.
 Native saves preserve both fields. IDML warns that it loses terminal catchword text.
 Without continuation text, ended streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
-=======
-Host, route and series catchword style references follow character-style rename and
-delete-with-replacement, including undo.
-Ended and overset
-streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
->>>>>>> origin/codex/issue-2873-inset-column-layout
 unchanged, and are included in native rendering and PDF export.
 
 Visible source is indexed once per stream and page for inset and text-variable consumers.

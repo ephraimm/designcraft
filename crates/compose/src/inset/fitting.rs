@@ -962,19 +962,6 @@ pub(crate) fn compose_frames(
     opts: &ComposeOptions,
     before: Option<crate::reuse::Reuse<'_>>,
 ) -> (ComposedStory, Option<crate::reuse::Trace>) {
-<<<<<<< HEAD
-    let inset_series: Vec<_> =
-        frames.iter().filter_map(|f| f.opts.inset_columns.as_ref()).flat_map(|c| c.streams.iter().filter_map(|s| s.series)).collect();
-    let routes: Vec<_> = crate::stream_frame_specs(doc, story.id)
-        .into_iter()
-        .filter(|f| f.opts.note_stream.is_some_and(|s| !inset_series.contains(&s.series)))
-        .collect();
-    // Terminal rows affect the page trial even when source bytes and formatting are unchanged.
-    // Series options already invalidate the cache's dependency signature.
-    let old = before
-        .filter(|b| b.story.catchword_continuation == story.catchword_continuation)
-        .and_then(|b| b.trace.inset.as_deref().map(|trace| (b, trace)));
-=======
     let mut result = compose_frames_owned(doc, story, frames, opts, before, None);
     // Only multi-host pages need a second fit: reclaim earlier rows after their stream's
     // last text-bearing host is known, then revalidate the cuts that used that space.
@@ -1027,7 +1014,6 @@ fn fit_hosts(
     let old = before
         .filter(|b| b.story.catchword_continuation == story.catchword_continuation)
         .and_then(|b| b.trace.inset.as_deref().map(|trace| (b, trace)));
->>>>>>> origin/codex/issue-2873-inset-column-layout
     let (resume, changed) = old.map_or((0, Vec::new()), |(b, trace)| resume_page(story, b, trace));
     let mut pages = old.map_or_else(Vec::new, |(_, t)| t.pages.iter().take(resume).cloned().collect::<Vec<_>>());
     let mut past: Vec<_> = pages.iter().flat_map(|p| p.areas.iter().cloned()).collect();
@@ -1324,9 +1310,6 @@ fn compose_frames_owned(
             note.overflow = true;
         }
     }
-<<<<<<< HEAD
-    let commentary_overset = state.pending_series().next().is_some();
-=======
     let commentary_overset = state.pending_series().next().is_some()
         || story.notes.iter().enumerate().any(|(index, note)| {
             let placed = merged
@@ -1346,7 +1329,6 @@ fn compose_frames_owned(
                         .any(|s| s.series == Some(doc.note_series_id(note.series))))
                 && placed < note.text.len()
         });
->>>>>>> origin/codex/issue-2873-inset-column-layout
     if commentary_overset {
         warnings.push("Inset commentary remains after the final frame".into());
     }

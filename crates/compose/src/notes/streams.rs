@@ -229,19 +229,11 @@ pub(crate) fn fit_stream_page_dynamic(
                     break;
                 }
             }
-<<<<<<< HEAD
-        }
-        for (_, part) in placed_parts(doc, story, notes, &areas, opts.note_bands).into_iter().filter(|(index, _)| *index == fi) {
-            if let Some(out) = result.frames.get_mut(fi) {
-                out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
-                super::append_note(&mut out.notes, part);
-=======
             for part in placed_parts(doc, story, notes, &notes.placed[placed_start..], *area, ci, opts.note_bands, previous, &mut sources) {
                 if let Some(out) = result.frames.get_mut(fi) {
                     out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
                     super::append_note(&mut out.notes, part);
                 }
->>>>>>> origin/codex/issue-2873-inset-column-layout
             }
         }
     }
@@ -267,56 +259,6 @@ pub(crate) fn fit_stream_page_dynamic(
     result
 }
 
-<<<<<<< HEAD
-fn placed_parts(doc: &Document, _story: &Story, notes: &SeriesNotes, areas: &[FrameSpec], bands: bool) -> Vec<(usize, PlacedNote)> {
-    let o = doc.note_options(notes.series);
-    let mut out = Vec::new();
-    let mut previous: Option<(f64, f64, super::NoteMetrics)> = None;
-    for (fi, frame) in areas.iter().enumerate() {
-        for (ci, area) in frame.columns().iter().enumerate() {
-            if !bands {
-                previous = None;
-            }
-            let mut first = true;
-            for part in notes.placed.iter().filter(|p| p.fi == fi.saturating_add(1) && p.col == ci) {
-                let note = &part.note;
-                let y = if bands && first && part.part > 0 && previous.is_some() {
-                    area.y0
-                } else {
-                    previous.map_or(area.y0 + o.space_before + part.m.top_padding(), |(baseline, _, metrics)| {
-                        baseline + o.space_between + metrics.advance_to(part.m) - part.m.first
-                    })
-                };
-                let bottom = y + part.m.last + part.m.descent;
-                let top = if first {
-                    y
-                } else {
-                    previous.map_or(y, |(_, bottom, _)| if part.m.lead <= 0.0 { y + part.m.first - part.m.ascent } else { bottom + o.space_between })
-                };
-                out.push((
-                    fi,
-                    PlacedNote {
-                        id: note.id,
-                        index: match part.source {
-                            super::NoteSource::Story(k) | super::NoteSource::Cell { k, .. } => k,
-                        },
-                        series: notes.series,
-                        reference_baseline: 0.0,
-                        overflow: bottom > area.y1 + 0.01,
-                        column: ci as u32,
-                        label: part.label.clone(),
-                        origin: Point::new(area.x0, y),
-                        rect: Rect::new(area.x0, top, area.x1, bottom),
-                        text: part.text.clone(),
-                        source: Arc::from(note.text.text.as_str()),
-                        note: Arc::clone(note),
-                    },
-                ));
-                previous = Some((y + part.m.last, bottom, part.m));
-                first = false;
-            }
-        }
-=======
 #[cfg(test)]
 thread_local! {
     pub(crate) static PART_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -352,7 +294,11 @@ fn placed_parts(
             })
         };
         let bottom = y + part.m.last + part.m.descent;
-        let top = if first { y } else { previous.map_or(y, |(_, bottom, _)| if part.m.lead <= 0.0 { y + part.m.first - part.m.ascent } else { bottom + o.space_between }) };
+        let top = if first {
+            y
+        } else {
+            previous.map_or(y, |(_, bottom, _)| if part.m.lead <= 0.0 { y + part.m.first - part.m.ascent } else { bottom + o.space_between })
+        };
         out.push(PlacedNote {
             id: note.id,
             index: key,
@@ -369,7 +315,6 @@ fn placed_parts(
         });
         *previous = Some((y + part.m.last, bottom, part.m));
         first = false;
->>>>>>> origin/codex/issue-2873-inset-column-layout
     }
     out
 }

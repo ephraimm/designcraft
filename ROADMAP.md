@@ -1,6 +1,5 @@
 # DesignCraft roadmap
 
-<<<<<<< HEAD
 - 2026-11-18: table rows support Keep with Next Row and Start Row through `table.rowOptions`; kept groups reserve their cell footnotes before fitting (#2353 integration).
 
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
@@ -10,7 +9,6 @@
 - 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).
 
 - 2026-11-19: each note series has an independent `catchwordContinuation`, with command validation, native persistence and an IDML loss warning. Story continuation remains main-stream-only (#2869).
-=======
 - 2026-11-20: catchword styles in hosts, routes, series and object styles follow character-style rename and replacement in one undo step (#2873).
 
 - 2026-11-20: inset route dependencies use one frame-ID index and memoized chain validation, with a linear visit regression (#2873).
@@ -23,7 +21,6 @@
 
 - 2026-11-20: unsized catchword styles inherit each stream's metrics; note series and routes can override the host catchword style (#2873).
 
->>>>>>> origin/codex/issue-2873-inset-column-layout
 - 2026-11-20: regression guards keep widened main and commentary lines below finished streams' full catchword rows (#2873).
 
 - 2026-11-20: styled catchwords use their declared leading as the baseline distance from the preceding line, reserving only the span between the two descents; boolean placement is unchanged (#2873).
