@@ -9,6 +9,10 @@
 - 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).
 
 - 2026-11-19: each note series has an independent `catchwordContinuation`, with command validation, native persistence and an IDML loss warning. Story continuation remains main-stream-only (#2869).
+- 2026-11-20: regression guards keep widened main and commentary lines below finished streams' full catchword rows (#2873).
+
+- 2026-11-20: styled catchwords use their declared leading as the baseline distance from the preceding line, reserving only the span between the two descents; boolean placement is unchanged (#2873).
+
 - 2026-11-20: routed catchwords require `noteStream.catchword:true` on the route frame; the flag defaults to false, survives native saves and warns on IDML loss (#2873).
 
 - 2026-11-20: styled catchword rows use the character style's leading exactly; boolean catchwords retain the 9/12 pt type and 18 pt row defaults (#2873).
