@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Note Series",
             [],
             None,
-            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → {id}",
+            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, bodyHidden?: bool, runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → {id}",
             has_doc,
             series_create
         ),
