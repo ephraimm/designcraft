@@ -565,6 +565,15 @@ fn two_same_page_hosts_share_one_route_fit_including_second_host_anchor() {
 
 #[test]
 fn revisited_page_routes_include_return_visit_anchor_once() {
+    assert_revisited_page_routes(false);
+}
+
+#[test]
+fn integration_revisited_inset_routes_keep_disjoint_notes_and_split_carry_once() {
+    assert_revisited_page_routes(true);
+}
+
+fn assert_revisited_page_routes(with_middle_note: bool) {
     for page_count in [2, 3] {
         let text = "Main line.\n".repeat(30);
         let (mut doc, sid) = document(page_count, &text, "", "");
@@ -613,7 +622,38 @@ fn revisited_page_routes_include_return_visit_anchor_once() {
         };
         let first = doc.story_mut(sid).unwrap().insert_note(0, "First visit note.", Default::default()).unwrap();
         doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
+        let middle = with_middle_note.then(|| {
+            let before = compose_story(&doc, sid, &Default::default());
+            // Anchor inside the second line, rather than at the preceding page's cut boundary.
+            let anchor = before.frame(hosts[1]).unwrap().lines[1].range.start + 1;
+            let id = doc.story_mut(sid).unwrap().insert_note(anchor, "Middle page note.", Default::default()).unwrap();
+            doc.story_mut(sid).unwrap().note_mut(id).unwrap().series = 2;
+            id
+        });
         let cs = compose_story(&doc, sid, &Default::default());
+        if let Some(middle) = middle {
+            assert!(cs.frame(hosts[1]).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(middle).unwrap()));
+            let parts: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).collect();
+            assert_eq!(parts.iter().filter(|n| n.id == first).count(), 1);
+            assert_eq!(parts.iter().filter(|n| n.id == middle).count(), 1);
+            assert_eq!(parts.iter().filter(|n| n.id == note).count(), 2, "one split part on each physical page");
+            assert!(
+                cs.frame(later_route.unwrap_or(other_route)).unwrap().notes.iter().any(|n| n.id == middle),
+                "middle note {middle}, anchor {:?}, host range {:?}; all frame parts {:?}",
+                doc.story(sid).unwrap().note_anchor(middle),
+                cs.frame(hosts[1]).unwrap().range,
+                cs.frames
+                    .iter()
+                    .map(|f| (
+                        f.frame,
+                        f.notes
+                            .iter()
+                            .map(|n| (n.id, n.series, n.text.frames.iter().map(|f| f.range.clone()).collect::<Vec<_>>()))
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>()
+            );
+        }
         assert!(cs.frame(last).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(note).unwrap()));
         assert!(
             !cs.is_overset(),
@@ -642,7 +682,10 @@ fn revisited_page_routes_include_return_visit_anchor_once() {
         assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == first));
         assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == note && n.source.as_ref() == return_text));
         if let Some(id) = later_route {
-            assert!(cs.frame(id).unwrap().notes.is_empty(), "the hostless page must consume the continuation first");
+            assert!(
+                cs.frame(id).unwrap().notes.iter().all(|n| Some(n.id) == middle),
+                "the hostless page must consume the continuation before the later anchor's note"
+            );
         }
     }
 }

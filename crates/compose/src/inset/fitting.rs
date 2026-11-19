@@ -219,7 +219,9 @@ fn fit_routes(
     let (mut result, _) = fit(&rows);
     let mut regions = Vec::new();
     if let Some(options) = geometry.catchwords.filter(|c| c.catchwords.enabled()) {
-        let height = super::catchwords::row_height(doc, story, input.main.end, &options.catchwords);
+        // The former envelope end meant the furthest accepted source byte, including revisits.
+        let main_end = input.main.iter().map(|range| range.end).max().unwrap_or(0);
+        let height = super::catchwords::row_height(doc, story, main_end, &options.catchwords);
         let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
         let mut seen = std::collections::HashSet::new();
         for area in input.areas.iter().rev() {
@@ -233,7 +235,7 @@ fn fit_routes(
                     .notes
                     .iter()
                     .zip(&refs)
-                    .any(|(note, at)| doc.note_series_id(note.series) == series && *at >= input.main.end && !note.text.is_empty());
+                    .any(|(note, at)| doc.note_series_id(note.series) == series && *at >= main_end && !note.text.is_empty());
             let shown = result.frames.iter().flat_map(|f| &f.notes).any(|n| n.series == series);
             let terminal = doc.note_options(series).catchword_continuation.as_deref().is_some_and(|s| !s.is_empty());
             if shown && (future || terminal || result.state.pending_series().any(|id| id == series)) {
@@ -462,9 +464,9 @@ impl Page<'_> {
                     self.story,
                     StreamPageInput {
                         page: self.frame.page.unwrap_or(0),
-                        main: self.start..wanted,
+                        main: std::iter::once(self.start..wanted).collect(),
                         areas: &[area],
-                        force_starts: Some(self.start..wanted),
+                        force_starts: std::iter::once(self.start..wanted).collect(),
                     },
                     self.before,
                     &ComposeOptions { note_bands: true, ..self.opts.clone() },
@@ -578,9 +580,9 @@ impl Page<'_> {
                         self.story,
                         StreamPageInput {
                             page: self.frame.page.unwrap_or(0),
-                            main: self.start..wanted,
+                            main: std::iter::once(self.start..wanted).collect(),
                             areas,
-                            force_starts: force.then_some(self.start..wanted),
+                            force_starts: force.then_some(self.start..wanted).into_iter().collect(),
                         },
                         self.before,
                         &ComposeOptions { note_bands: true, ..self.opts.clone() },
@@ -731,9 +733,9 @@ impl Page<'_> {
                 },
                 StreamPageInput {
                     page: route_page,
-                    main: if route_page == page { self.start..c.cut } else { 0..0 },
+                    main: ranges.clone(),
                     areas: &areas,
-                    force_starts: (force && route_page == page).then_some(self.start..c.cut),
+                    force_starts: (force && route_page == page).then_some(self.start..c.cut).into_iter().collect(),
                 },
                 &state,
                 self.opts,
@@ -1157,7 +1159,7 @@ fn fit_physical_routes(
             doc,
             story,
             RouteGeometry { core: core.map(|b| (host.id, b)), catchwords: host.opts.inset_columns.as_ref(), routes },
-            StreamPageInput { page, main: ranges.first().map_or(0, |r| r.start)..ranges.last().map_or(0, |r| r.end), areas: &areas, force_starts },
+            StreamPageInput { page, main: ranges.clone(), areas: &areas, force_starts: force_starts.into_iter().collect() },
             &route_state,
             opts,
             &ranges,
@@ -1268,7 +1270,7 @@ fn compose_frames_owned(
             doc,
             story,
             RouteGeometry { core: None, catchwords: frames.last().and_then(|f| f.opts.inset_columns.as_ref()), routes: &routes },
-            StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None },
+            StreamPageInput { page, main: Vec::new(), areas: &areas, force_starts: Vec::new() },
             &state,
             opts,
             &[],
@@ -1372,7 +1374,7 @@ pub(super) fn check_commentary_coverage(
             .max()
             .unwrap_or(0);
         refs.get(index).is_some_and(|at| *at < start)
-            && (routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == doc.note_series_id(note.series)))
+            && (routes.iter().any(|f| f.opts.note_stream.as_ref().is_some_and(|s| s.series == doc.note_series_id(note.series)))
                 || frames
                     .iter()
                     .filter_map(|f| f.opts.inset_columns.as_ref())

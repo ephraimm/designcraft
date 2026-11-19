@@ -212,7 +212,7 @@ pub(crate) fn fit_stream_page_dynamic(
                     notes.place_line(doc, column, &[k], None, opts);
                 } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[k], available, opts).filter(respects_keeps) {
                     notes.place_line(doc, column, &[k], Some(plan), opts);
-                } else if !*had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.as_ref().is_some_and(|range| range.contains(at))) {
+                } else if !*had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.iter().any(|range| range.contains(at))) {
                     notes.place(doc, k, column, opts);
                     if let Some(note) = story.notes.get(k) {
                         result.warnings.push(format!(

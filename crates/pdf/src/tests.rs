@@ -738,7 +738,8 @@ fn commentary_on_a_return_visit_exports_once_on_its_anchor_page() {
     for page in 0..2 {
         let (route, _) =
             d.add_text_frame(SpreadRef::Doc(page), Rect::new(300.0, 36.0, 540.0, 336.0), d.default_layer(), "", Default::default()).unwrap();
-        d.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: host, series: 0 });
+        d.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: host, series: 0, catchword: false.into(), follow_inset: None });
     }
     let story = d.story_mut(host).unwrap();
     for (word, comment) in [("Last.", "CommentC"), ("Middle.", "CommentB"), ("First.", "CommentA")] {

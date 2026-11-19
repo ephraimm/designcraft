@@ -489,7 +489,7 @@ fn route_parts_are_emitted_once_and_share_the_note_source() {
         let fit = fit_stream_page(
             &doc,
             doc.story(sid).unwrap(),
-            StreamPageInput { page: 0, main: 0..doc.story(sid).unwrap().len(), areas: &areas, force_starts: None },
+            StreamPageInput { page: 0, main: std::iter::once(0..doc.story(sid).unwrap().len()).collect(), areas: &areas, force_starts: Vec::new() },
             &StreamState::default(),
             &ComposeOptions { note_bands, ..Default::default() },
         );

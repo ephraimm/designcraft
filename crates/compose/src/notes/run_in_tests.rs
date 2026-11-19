@@ -105,7 +105,7 @@ fn hidden_run_in_body_keeps_separator_without_numbers() {
             let (route, _) =
                 doc.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 580.0, 450.0), doc.default_layer(), "", Default::default()).unwrap();
             doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-                Some(NoteStream { story: sid, series: 0, catchword: false, follow_inset: None });
+                Some(NoteStream { story: sid, series: 0, catchword: false.into(), follow_inset: None });
         }
         let cs = crate::compose_story(&doc, sid, &Default::default());
         let ns = notes(&cs);
@@ -186,14 +186,14 @@ fn run_in_stream_frame_and_new_area() {
     let (route, _) =
         doc.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 580.0, 450.0), doc.default_layer(), "", Default::default()).unwrap();
     doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-        Some(NoteStream { story: sid, series: 0, catchword: false, follow_inset: None });
+        Some(NoteStream { story: sid, series: 0, catchword: false.into(), follow_inset: None });
     let areas = crate::stream_frame_specs(&doc, sid);
     let opts = ComposeOptions::default();
     let story = doc.story(sid).unwrap();
     let fit = fit_stream_page(
         &doc,
         story,
-        StreamPageInput { page: 0, main: 0..story.len(), areas: &areas, force_starts: None },
+        StreamPageInput { page: 0, main: std::iter::once(0..story.len()).collect(), areas: &areas, force_starts: Vec::new() },
         &StreamState::default(),
         &opts,
     );
@@ -202,10 +202,20 @@ fn run_in_stream_frame_and_new_area() {
     assert_eq!(ns.len(), 3);
     assert!((baseline(&ns[0]) - baseline(&ns[2])).abs() < 0.01);
     let cut = story.note_anchor(story.notes[1].id).unwrap();
-    let first =
-        fit_stream_page(&doc, story, StreamPageInput { page: 0, main: 0..cut, areas: &areas, force_starts: None }, &StreamState::default(), &opts);
-    let second =
-        fit_stream_page(&doc, story, StreamPageInput { page: 1, main: cut..story.len(), areas: &areas, force_starts: None }, &first.state, &opts);
+    let first = fit_stream_page(
+        &doc,
+        story,
+        StreamPageInput { page: 0, main: std::iter::once(0..cut).collect(), areas: &areas, force_starts: Vec::new() },
+        &StreamState::default(),
+        &opts,
+    );
+    let second = fit_stream_page(
+        &doc,
+        story,
+        StreamPageInput { page: 1, main: std::iter::once(cut..story.len()).collect(), areas: &areas, force_starts: Vec::new() },
+        &first.state,
+        &opts,
+    );
     assert!(second.frames[0].notes[0].text.frames[0].lines[0].first_in_para);
     assert!((baseline(&second.frames[0].notes[0]) - baseline(&second.frames[0].notes[1])).abs() < 0.01);
 }
@@ -384,14 +394,14 @@ fn run_in_long_note_splits_and_keeps_source_ranges() {
     story.note_mut(id).unwrap().text = Story::with_text(designcraft_doc::StoryId(0), &"A long comment with words. ".repeat(30), Default::default());
     let (route, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 580.0, 96.0), doc.default_layer(), "", Default::default()).unwrap();
     doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-        Some(NoteStream { story: sid, series: 0, catchword: false, follow_inset: None });
+        Some(NoteStream { story: sid, series: 0, catchword: false.into(), follow_inset: None });
     let areas = crate::stream_frame_specs(&doc, sid);
     let story = doc.story(sid).unwrap();
     let end = story.note_anchor(story.notes[2].id).unwrap();
     let fit = fit_stream_page(
         &doc,
         story,
-        StreamPageInput { page: 0, main: 0..end, areas: &areas, force_starts: None },
+        StreamPageInput { page: 0, main: std::iter::once(0..end).collect(), areas: &areas, force_starts: Vec::new() },
         &StreamState::default(),
         &Default::default(),
     );
@@ -403,8 +413,13 @@ fn run_in_long_note_splits_and_keeps_source_ranges() {
     let mut state = fit.state;
     let mut next = cut;
     for page in 1..30 {
-        let fit =
-            fit_stream_page(&doc, story, StreamPageInput { page, main: end..end, areas: &areas, force_starts: None }, &state, &Default::default());
+        let fit = fit_stream_page(
+            &doc,
+            story,
+            StreamPageInput { page, main: std::iter::once(end..end).collect(), areas: &areas, force_starts: Vec::new() },
+            &state,
+            &Default::default(),
+        );
         for part in fit.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id) {
             assert_eq!(part.text.frames[0].range.start, next);
             next = part.text.frames[0].range.end;
