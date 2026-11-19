@@ -22,6 +22,8 @@ With `bodyHidden`, the run-in separator remains while the note number and its
 separator are hidden, in both column feet and stream frames.
 Split notes retain source byte ranges and replay the first part's line position
 and page context when fitting subsequent areas.
+The overlap fallback checks the first part's own width when a continuation
+narrows or widens, preserving the source cut already emitted in that part.
 
 The first note in each area starts a paragraph. An explicit `runIn:false` also
 starts a paragraph. Margin notes start a paragraph when running in would put

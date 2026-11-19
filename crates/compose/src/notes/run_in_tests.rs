@@ -18,7 +18,76 @@ fn sample(placement: NotePlacement) -> (Document, designcraft_doc::StoryId) {
 }
 
 fn notes(cs: &ComposedStory) -> Vec<&PlacedNote> {
+    assert_note_line_coverage(cs);
     cs.frames.iter().flat_map(|f| &f.notes).collect()
+}
+
+// Check emitted lines, not the enclosing frame range, which can conceal skipped text.
+fn assert_note_line_coverage(cs: &ComposedStory) {
+    let mut covered = HashMap::<u64, Vec<usize>>::new();
+    for n in cs.frames.iter().flat_map(|f| &f.notes) {
+        let counts = covered.entry(n.id).or_insert_with(|| vec![0; n.source.len()]);
+        for line in n.text.frames.iter().flat_map(|f| &f.lines) {
+            for count in &mut counts[line.range.clone()] {
+                *count += 1;
+            }
+            // Paragraph separators belong to their terminating line without drawing a glyph.
+            if line.last_in_para && n.source.as_bytes().get(line.range.end) == Some(&b'\n') {
+                counts[line.range.end] += 1;
+            }
+        }
+    }
+    for n in cs.frames.iter().flat_map(|f| &f.notes) {
+        for (byte, count) in covered[&n.id].iter().enumerate() {
+            assert!(*count == 1 || (*count == 0 && n.overflow), "note {} byte {byte} emitted {count} times", n.id);
+        }
+    }
+}
+
+fn varying_width_parts(rtl: bool, width: f64) -> (Part, Part, usize) {
+    let (mut doc, sid) = sample(NotePlacement::Stream);
+    let story = doc.story_mut(sid).unwrap();
+    let note = Arc::make_mut(&mut story.notes[1]);
+    note.text = Story::with_text(
+        note.text.id,
+        if rtl { "אב גד הו זח טי כל מנ סע פצ קר שת" } else { "Alpha beta gamma delta epsilon zeta eta theta" },
+        Default::default(),
+    );
+    let len = note.text.len();
+    let mut para = ParaFormat::default();
+    para.para.direction = Some(if rtl { TextDirection::RightToLeft } else { TextDirection::LeftToRight });
+    let run = RunIn { owner: 0, indent: 130.0, para, inline: true };
+    let frame = crate::frame_specs(&doc, sid).remove(0);
+    let mut series = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false, None);
+    let heights = [(240.0, 18.0)];
+    let pages = [PartPage::of(&frame)];
+    let first = series.compose_parts_in(&doc, 1, 240.0, &frame, &Default::default(), &heights, &pages, Some(&run));
+    let replay = series.compose_parts_in(&doc, 1, width, &frame, &Default::default(), &heights, &pages, Some(&run));
+    (first[0].clone().unwrap(), replay[1].clone().unwrap(), len)
+}
+
+#[test]
+fn run_in_narrow_continuation_keeps_the_previously_emitted_cut() {
+    let (first, rest, _) = varying_width_parts(false, 100.0);
+    let end = first.0.frames[0].lines.last().unwrap().range.end;
+    let start = rest.0.frames[0].lines[0].range.start;
+    assert_eq!(end, start, "changing continuation width must not recompose the accepted first line");
+}
+
+#[test]
+fn run_in_varying_width_emitted_lines_cover_every_source_byte_once() {
+    for rtl in [false, true] {
+        for width in [60.0, 100.0, 180.0, 300.0] {
+            let (first, rest, len) = varying_width_parts(rtl, width);
+            let mut counts = vec![0; len];
+            for line in [&first, &rest].into_iter().flat_map(|p| &p.0.frames).flat_map(|f| &f.lines) {
+                for count in &mut counts[line.range.clone()] {
+                    *count += 1;
+                }
+            }
+            assert!(counts.iter().all(|c| *c == 1), "rtl={rtl} width={width}: {counts:?}");
+        }
+    }
 }
 
 fn baseline(n: &PlacedNote) -> f64 {
