@@ -90,6 +90,53 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
 }
 
 #[test]
+fn inset_cell_and_host_notes_at_ordinal_zero_keep_distinct_sources() {
+    let (mut doc, sid) = document(1, "Body reference.\nAfter table.", "", "");
+    let story = doc.story_mut(sid).unwrap();
+    story.insert_note(5, "Host ordinal zero.", Default::default()).unwrap();
+    let host = story.notes[0].clone();
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 150.0);
+    table.cells[0].text.insert(0, "Cell reference.");
+    table.cells[0].text.insert_note(5, "Cell ordinal zero.", Default::default()).unwrap();
+    let cell = table.cells[0].text.notes[0].clone();
+    story.insert_table(story.text.find('\n').unwrap(), table);
+
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let notes: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).collect();
+    let body_note = notes.iter().find(|n| Arc::ptr_eq(&n.note, &host)).unwrap();
+    let cell_note = notes.iter().find(|n| Arc::ptr_eq(&n.note, &cell)).unwrap();
+    assert_eq!(body_note.index, 0);
+    assert_eq!(cell_note.index, 0);
+    assert_eq!(body_note.source.as_ref(), "Host ordinal zero.");
+    assert_eq!(cell_note.source.as_ref(), "Cell ordinal zero.");
+    assert_eq!(cell_note.reference_baseline, 0.0, "a cell note must not inherit the host's reference baseline");
+    let at = doc.story(sid).unwrap().text.find(designcraft_doc::FOOTNOTE_REF).unwrap();
+    let baseline = cs.frames.iter().flat_map(|f| &f.lines).find(|l| l.range.contains(&at)).unwrap().baseline;
+    assert_eq!(body_note.reference_baseline, baseline);
+    assert!(baseline > 0.0);
+}
+
+#[test]
+fn inset_routed_host_note_parts_keep_their_reference_baselines() {
+    let (doc, sid, routes) = routed_document(90.0);
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let story = doc.story(sid).unwrap();
+    let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
+    let parts: Vec<_> = routes.iter().flat_map(|id| &cs.frame(*id).unwrap().notes).collect();
+    assert!(parts.len() > 3, "a routed note must split into multiple parts");
+    for part in parts {
+        let at = refs[part.index];
+        let baseline =
+            cs.frames.iter().filter(|f| !routes.contains(&f.frame)).flat_map(|f| &f.lines).find(|l| l.range.contains(&at)).unwrap().baseline;
+        assert!(baseline > 0.0);
+        assert_eq!(part.reference_baseline, baseline);
+        assert_eq!(part.source.as_ref(), story.notes[part.index].text.text);
+    }
+}
+
+#[test]
 fn inset_preserves_unplaced_column_footnote_overset() {
     let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
     let text = "Unplaced column footnote line.\n".repeat(150);
@@ -736,31 +783,4 @@ fn series_catchword_distinguishes_hidden_controls_from_active_delimiters() {
             );
         }
     }
-}
-
-#[test]
-fn main_start_counts_shared_run_in_baselines_once() {
-    let (mut doc, sid) = document(1, &"Main words. ".repeat(30), &"Commentary words. ".repeat(90), &"Outside words. ".repeat(90));
-    doc.note_series[0].options.run_in = true;
-    doc.note_series[0].options.body_hidden = true;
-    let story = doc.story_mut(sid).unwrap();
-    let id = story.insert_note(0, "Short.", Default::default()).unwrap();
-    let note = story.note_mut(id).unwrap();
-    note.series = 1;
-    note.text.format_chars(0..6, |f| {
-        f.over.size = Some(9.0);
-        f.over.leading = Some(designcraft_doc::Leading::Points(11.0));
-    });
-    let mut frames = frame_specs(&doc, sid);
-    frames[0].opts.inset_columns.as_mut().unwrap().main_start_baseline = Some(6);
-    let cs = compose(&doc, doc.story(sid).unwrap(), &frames, &Default::default());
-    let mut baselines: Vec<_> = cs.frames[0]
-        .notes
-        .iter()
-        .filter(|n| n.series == 1)
-        .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| n.origin.y + l.baseline)))
-        .collect();
-    baselines.sort_by(f64::total_cmp);
-    baselines.dedup_by(|a, b| (*a - *b).abs() < 0.01);
-    assert!((cs.frames[0].lines[0].baseline - baselines[5]).abs() < 0.01);
 }

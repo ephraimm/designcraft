@@ -35,7 +35,8 @@ fn hidden_run_in_body_keeps_separator_without_numbers() {
         if placement == NotePlacement::Stream {
             let (route, _) =
                 doc.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 580.0, 450.0), doc.default_layer(), "", Default::default()).unwrap();
-            doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: sid, series: 0 });
+            doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+                Some(NoteStream { story: sid, series: 0, follow_inset: None });
         }
         let cs = crate::compose_story(&doc, sid, &Default::default());
         let ns = notes(&cs);
@@ -115,7 +116,7 @@ fn run_in_stream_frame_and_new_area() {
     let (mut doc, sid) = sample(NotePlacement::Stream);
     let (route, _) =
         doc.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 580.0, 450.0), doc.default_layer(), "", Default::default()).unwrap();
-    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: sid, series: 0 });
+    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: sid, series: 0, follow_inset: None });
     let areas = crate::stream_frame_specs(&doc, sid);
     let opts = ComposeOptions::default();
     let story = doc.story(sid).unwrap();
@@ -246,7 +247,7 @@ fn run_in_long_note_splits_and_keeps_source_ranges() {
     let id = story.notes[1].id;
     story.note_mut(id).unwrap().text = Story::with_text(designcraft_doc::StoryId(0), &"A long comment with words. ".repeat(30), Default::default());
     let (route, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 580.0, 96.0), doc.default_layer(), "", Default::default()).unwrap();
-    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: sid, series: 0 });
+    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: sid, series: 0, follow_inset: None });
     let areas = crate::stream_frame_specs(&doc, sid);
     let story = doc.story(sid).unwrap();
     let end = story.note_anchor(story.notes[2].id).unwrap();

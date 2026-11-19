@@ -156,9 +156,8 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Have:** insertion at a table-cell caret (#2613), listing in reading order (#2614), and
   command editing/deletion through explicit table, row and column addresses.
 - **Still missing:** editing existing cell notes on the canvas. The caret currently resolves
-  footnote ids only in the host story, not in its table cells. With Span Footnotes Across
-  Columns in a multi-column frame, a cell note first placed in a later column does not rewind
-  earlier columns overlapping its enlarged area; this needs the story-level relayout path.
+  footnote ids only in the host story, not in its table cells. Spanning cell notes rewind earlier columns when their enlarged area overlaps body text.
+  Inset placements retain distinct cell and host note sources even when their ordinals match.
   Clipped fixed-height cells still print notes; filtering clipped references remains open.
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
   submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer; general reliability

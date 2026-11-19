@@ -227,7 +227,6 @@ fn placed_parts(doc: &Document, _story: &Story, notes: &SeriesNotes, areas: &[Fr
             }
             let mut first = true;
             for part in notes.placed.iter().filter(|p| p.fi == fi.saturating_add(1) && p.col == ci) {
-                let super::NoteSource::Story(k) = part.source else { continue };
                 let note = &part.note;
                 let y = if bands && first && part.part > 0 && previous.is_some() {
                     area.y0
@@ -246,7 +245,9 @@ fn placed_parts(doc: &Document, _story: &Story, notes: &SeriesNotes, areas: &[Fr
                     fi,
                     PlacedNote {
                         id: note.id,
-                        index: k,
+                        index: match part.source {
+                            super::NoteSource::Story(k) | super::NoteSource::Cell { k, .. } => k,
+                        },
                         series: notes.series,
                         reference_baseline: 0.0,
                         overflow: bottom > area.y1 + 0.01,

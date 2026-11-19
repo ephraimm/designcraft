@@ -3536,6 +3536,48 @@ fn table_reports_overset_when_every_remaining_column_has_footnotes() {
 }
 
 #[test]
+fn late_cell_footnote_reflows_earlier_columns_for_its_spanning_area() {
+    let text = "Body line.\n".repeat(16);
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.footnote_options.span_columns = true;
+    d.footnote_options.space_before = 40.0;
+    let st = d.story_mut(sid).unwrap();
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    table.cells[0].text.insert(0, "Cell.");
+    st.insert_table(st.len(), table);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let original = plain.frame(fid).unwrap();
+    assert!(!plain.is_overset());
+    assert_eq!(original.tables[0].column, 1);
+    let last_body = original.lines.iter().rfind(|l| l.column == 0).unwrap();
+
+    d.story_mut(sid).unwrap().table_mut(77).unwrap().cells[0].text.insert_note(4, "Late cell note.", ParaFormat::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = cs.frame(fid).unwrap();
+    assert_eq!(ft.tables.len(), 1);
+    assert_eq!(ft.tables[0].column, 1);
+    assert_eq!(ft.notes.len(), 1);
+    let note = &ft.notes[0];
+    assert_eq!(note.column, 1);
+    assert!((note.rect.x0 - ft.columns[0].x0).abs() < 0.01);
+    assert!((note.rect.x1 - ft.columns[1].x1).abs() < 0.01);
+    let top = note.rect.y0 - d.footnote_options.space_before;
+    assert!(last_body.baseline + last_body.descent > top + 0.01, "the note must cover the original last body line");
+    for line in &ft.lines {
+        assert!(
+            line.baseline + line.descent <= top + 0.01,
+            "column {} body bottom {} overlaps note area starting at {top}",
+            line.column,
+            line.baseline + line.descent
+        );
+    }
+    assert!(ft.lines.iter().any(|l| l.column == 1 && l.range == last_body.range), "the covered body line must reflow to column 2");
+    assert!(ft.tables[0].cells.iter().all(|c| c.rect.y1 <= top + 0.01));
+}
+
+#[test]
 fn table_cell_footnotes_share_the_column_foot_in_reading_order() {
     let (mut d, sid, fid) = doc_with("Before.\nAfter.", Rect::new(0.0, 0.0, 240.0, 400.0), ParaAttrs::default());
     let st = d.story_mut(sid).unwrap();
@@ -12312,44 +12354,27 @@ fn cross_reference_anchor_pages_follow_note_placement_changes() {
 
 #[test]
 fn cached_table_cell_notes_follow_default_spacing_changes() {
-    let (mut d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 240.0, 400.0), ParaAttrs::default());
+    let (mut d, sid, fid) = doc_with("", Rect::new(0.0, 0.0, 240.0, 400.0), ParaAttrs::default());
+    let (next, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 420.0, 240.0, 920.0), d.default_layer(), "", Default::default()).unwrap();
+    d.thread(fid, next).unwrap();
     let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 200.0);
+    table.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    table.rows[0].height = 350.0;
     table.cells[0].text.insert(0, "Cell reference.");
     table.cells[0].text.insert_note(5, "Cell footnote.", Default::default());
     d.story_mut(sid).unwrap().insert_table(0, table);
     assert!(d.story(sid).unwrap().notes.is_empty());
     let cache = Cache::new();
     let before = cache.get(&d, sid, None);
-    let reservation = |d: &Document, cs: &ComposedStory| {
-        let specs = frame_specs(d, sid);
-        let placed = &cs.frames[0].notes[0];
-        let cell = notes::CellNote {
-            source: notes::NoteSource::Cell { table: 77, row: 0, col: 0, slot: 0, k: 0 },
-            label: placed.label.clone(),
-            note: placed.note.clone(),
-        };
-        notes::Notes::continuing(d, d.story(sid).unwrap(), &specs, None).reserve_cells(
-            d,
-            notes::NoteColumn { frame_index: 0, column_index: 0, width: specs[0].area.width(), frame: &specs[0] },
-            &[cell],
-            &ComposeOptions::default(),
-        )
-    };
-    let before_reserved = reservation(&d, &before);
     d.footnote_options.space_before += 36.0;
     let after = cache.get(&d, sid, None);
     let fresh = Cache::new().get(&d, sid, None);
-    // Column-foot notes stay bottom-aligned; spacing changes their body reservation.
-    assert!(!Arc::ptr_eq(&before, &after), "cell-only notes must invalidate the host's cached composition");
-    let column_note = |cs: &ComposedStory| {
-        assert!(cs.frames[0].tables[0].cells[0].text.frames[0].notes.is_empty());
-        assert_eq!(cs.frames[0].notes[0].source.as_ref(), "Cell footnote.");
-        cs.frames[0].notes[0].rect
-    };
-    assert_eq!(column_note(&after), column_note(&fresh));
-    assert_eq!(column_note(&before), column_note(&fresh));
-    assert!((reservation(&d, &fresh) - before_reserved - 36.0).abs() < 0.01);
-    assert_eq!(after.frames[0].tables[0].rect, fresh.frames[0].tables[0].rect);
+    assert!(!fresh.is_overset());
+    assert_eq!(before.frames[0].tables.len(), 1);
+    assert!(fresh.frames[0].tables.is_empty(), "larger note spacing must move the row to the next frame");
+    assert!(after.frames[0].tables.is_empty());
+    assert_eq!(after.frames[1].notes[0].rect, fresh.frames[1].notes[0].rect);
+    assert_eq!(after.frames[1].tables[0].rect, fresh.frames[1].tables[0].rect);
 }
 
 fn margin_xref_index_cycle_fixture(anchored_host: bool) -> (Document, u64, StoryId) {

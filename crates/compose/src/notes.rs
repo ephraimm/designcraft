@@ -485,13 +485,13 @@ impl SeriesNotes {
             section_marker: opts.section_marker.clone(),
             page: opts.page,
             running: opts.running.clone(),
-            label: (!label.is_empty()).then_some(label),
+            label: (!label.is_empty()).then_some(label.clone()),
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
-            continuations: self.part_continuations(k, heights, opts.note_bands),
+            continuations: if matches!(source, NoteSource::Story(_)) { self.part_continuations(k, heights, opts.note_bands) } else { Vec::new() },
             ..Default::default()
         };
-        let previous = self.carry.as_ref().filter(|c| c.k == k);
+        let previous = self.carry.as_ref().filter(|c| matches!(source, NoteSource::Story(_)) && c.k == k);
         let part = previous.map_or(0, |c| c.heights.len());
         let local_exclusions = || {
             if opts.note_bands {
@@ -848,7 +848,6 @@ impl SeriesNotes {
         let mut texts = self.area_texts(doc, column, own, opts);
         let mut ms = self.metrics(doc, column, own, opts);
         for n in cells {
-            // A note placed already (here or in another column) counts once.
             if self.placed.iter().any(|p| p.source == n.source) {
                 continue;
             }

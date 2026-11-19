@@ -5,6 +5,8 @@
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
 - **2026-11-19** · Commentary routes can end a column at the composed inset core or start a foot below it with `noteStream.followInset`; geometry participates in page fitting and follows text edits (#2873).
+- **2026-11-19** · Inset placements retain each cell or host note's composed source text (#2611).
+  Host reference baselines are assigned once after routes are appended, using an ordered pass.
 
 - **2026-11-19** · Inset cut search verifies unproved larger keys within its trial budget and warns when verification cannot finish (#2873).
 
@@ -55,8 +57,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   once. Page-dependent notes recompose after row movement; header notes follow the first body
   group, and non-repeating footer notes reserve space only for the final group. Cell notes use
   the story's numbering sequence in logical reading order, including RTL and nested tables
-  (#2612). Page/spread/section restarts follow placed rows. Spanning notes do not rewind earlier
-  columns; clipped fixed-height cells still print their notes. Editing cell-note text with the canvas caret is not supported.
+  (#2612). Page/spread/section restarts follow placed rows. Spanning cell notes rewind earlier
+  columns when their enlarged area overlaps body text; clipped fixed-height cells still print their notes. Editing cell-note text with the canvas caret is not supported.
   No readiness percentage change.
 - **2026-11-06** · Automation roots refuse `COM¹` to `LPT³` and a device name before a colon (`COM1:`, `NUL:x`). A batch-export layout of that name is written with a leading `_` on every platform. No readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.

@@ -1703,14 +1703,21 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
             return TableParagraphResult::Restart(j);
         }
     }
-    if !placed {
-        if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
-            *balance_runs += 1;
+    match placed {
+        TableParagraphResult::Placed => {}
+        TableParagraphResult::Restart(j) => {
             rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
             return TableParagraphResult::Restart(j);
         }
-        out.overset_at = Some(range_start);
-        return TableParagraphResult::Overset;
+        TableParagraphResult::Overset => {
+            if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
+                *balance_runs += 1;
+                rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
+                return TableParagraphResult::Restart(j);
+            }
+            out.overset_at = Some(range_start);
+            return TableParagraphResult::Overset;
+        }
     }
     info.push(ParaInfo {
         start: first_at.unwrap_or(start_at),
