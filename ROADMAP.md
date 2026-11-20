@@ -1,5 +1,47 @@
 # DesignCraft roadmap
 
+- 2026-11-20: D69 run-in commentary bands translate wrap exclusions from the same resolved baseline and drop-cap metrics as final placement; glyph-outline regression coverage guards the clearance.
+
+- 2026-11-20: D68 inset routes use physical-page anchors and text-bearing catchword ownership; auto leading follows source paragraphs, refits are bounded, band origins are incremental, and following feet retain catchword baseline rhythm (#2873).
+
+- 2026-11-20: newly starting commentary notes translate wrap obstacles from their placed baseline origin, keeping widened lines clear of per-stream catchword rows (#2873).
+
+- 2026-11-20: catchword styles in hosts, routes, series and object styles follow character-style rename and replacement in one undo step (#2873).
+
+- 2026-11-20: inset route dependencies use one frame-ID index and memoized chain validation, with a linear visit regression (#2873).
+
+- 2026-11-20: commentary routes emit newly fitted parts once, carrying baseline metrics and sharing note source text (#2873).
+
+- 2026-11-20: revisited-page routes fit in physical page order after host ranges are known; failed starts revalidate their host cuts (#2873).
+
+- 2026-11-20: each stream reserves one catchword row at its last text-bearing host on a physical page (#2873).
+
+- 2026-11-20: unsized catchword styles inherit each stream's metrics; note series and routes can override the host catchword style (#2873).
+
+- 2026-11-20: regression guards keep widened main and commentary lines below finished streams' full catchword rows (#2873).
+
+- 2026-11-20: styled catchwords use their declared leading as the baseline distance from the preceding line, reserving only the span between the two descents; boolean placement is unchanged (#2873).
+
+- 2026-11-20: routed catchwords require `noteStream.catchword:true` on the route frame; the flag defaults to false, survives native saves and warns on IDML loss (#2873).
+
+- 2026-11-20: styled catchword rows use the character style's leading exactly; boolean catchwords retain the 9/12 pt type and 18 pt row defaults (#2873).
+
+- 2026-11-20: catchword glyphs keep their requested size when leading is small; only width fitting can shrink them (#2873).
+
+- 2026-11-20: routed catchwords follow their last composed line, and chained followers clear that row rather than the route frame's unused height (#2873).
+
+- 2026-11-19: routed series generate catchwords in their last route frame on a continuing page. Inset followers clear every stream's catchword row; page revisits and copied follower chains preserve routed output (#2873).
+
+- 2026-11-19: inset catchwords accept a character style and reserve rows proportional to its leading, with native persistence and an IDML loss warning (#2873).
+
+- 2026-11-19: inset routes include catchword clearance, share one fit across same-page hosts, and can follow an earlier route's composed bottom with `followInset.after` (#2873). Cut verification uses its remaining budget; catchword lookup and core measurement avoid redundant work.
+
+- **2026-11-19** · Commentary routes can end a column at the composed inset core or start a foot below it with `noteStream.followInset`; geometry participates in page fitting and follows text edits (#2873).
+
+- **2026-11-19** · Inset cut search verifies unproved larger keys within its trial budget and warns when verification cannot finish (#2873).
+
+- **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).
+
 - 2026-11-19: run-in note continuations preserve all source text when later bands change width; the overlap fallback uses the first part's own width.
 
 - **2026-11-19** · Run-in note headings move to the next line when their glyphs would overlap the predecessor or consume its separator space, in RTL and LTR text.

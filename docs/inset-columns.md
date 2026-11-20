@@ -47,18 +47,64 @@ Paragraph keeps treat same-page bands as one logical column; real page and colum
 retain their keep constraints.
 
 Commentary left after the final frame sets the same story overset signal used by document
-inspection and preflight, even when all main text fits.
+inspection and preflight, even when all main text fits. An unplaced column-footnote
+continuation also retains that signal after the accepted page slices are replayed.
 
 A stream series outside the inset's stream list can use standalone `noteStream` frames.
 Anchors feed the route on their page, in frame order, so a narrow column can continue into
 a full-width foot frame. These routes participate in the same page trials and retain their
 continuations independently of inset bands. Unplaced route commentary also sets story overset.
 
+A route can follow the composed inset core on its host's page:
+
+```json
+{"noteStream":{"story":23,"series":2,"followInset":{"edge":"start","gap":12}}}
+```
+
+The core bottom includes the inset main text, commentary, and reserved catchword rows.
+When a starting routed foot follows a catchword-bearing edge, its first baseline is the
+catchword baseline plus that row's leading and the follow gap. Its column still starts
+at the followed row's bottom.
+`edge:"end"` caps the route's bottom at core bottom plus gap; `edge:"start"`
+raises its top to at least that position, keeping its bottom. The frame's original area
+limits both adjustments. Set the foot frame's original top high enough to allow it to follow
+a shorter core upward. Each candidate page trial composes routes with these adjusted areas,
+and the final composed columns retain them. Closed areas place no text; notes continue into
+the next route area or report overset. A page without a host inset frame keeps the original
+route area. `gap` must be finite and within 0..15552 points. Invalid gaps are rejected by
+commands and the follow option is dropped on native load. Native round trips preserve valid
+options; IDML warns that it cannot retain `followInset` geometry.
+
+Following is measured in spread space. The host's transform maps its local core bottom into
+spread space; after adding `gap` in spread-space points, the route's inverse transform maps
+that edge into its local text area. Translation and positive axis-aligned scaling are supported,
+including containing-group transforms. Rotation, skew, or flipping on either frame makes
+`followInset` a no-op for that route and adds a composition warning.
+
+An optional `after` frame id raises the reference bottom to the greater of the core bottom
+and that route frame's composed bottom, before adding the gap:
+
+```json
+{"noteStream":{"story":23,"series":2,"followInset":{"edge":"start","gap":12,"after":45}}}
+```
+
+The reference must name a route frame for the same host story on the same page, composed
+earlier in this fit. Missing frames, other pages or stories, later frames and cycles make
+the entire follow adjustment a no-op with a composition warning. Native saves preserve
+`after`; IDML warns that it loses this dependency along with the follow geometry.
+
+Each physical page's routes are fitted once using all host ranges on that page, including
+a thread that returns to an earlier page. Chained followers use already fitted route bottoms.
+Copying the host and its route chain retargets `after` to the copied frames.
+
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming
 feasibility is monotone. Search plus the progress probe has a budget of ceil(log2(keys)) + 2
 probes. The full-page key is tried first so nonmonotone feasibility cannot hide a full-page fit.
+After the midpoint search, unprobed keys above the best fit are checked in descending
+order within the same budget, including when no fit has succeeded yet. If verification cannot finish, composition retains the best
+proven cut and reports a trial-budget warning.
 Each probe may re-lay once to resolve its whole-line cut. An incoming commentary tail
 may take a page with no main text only when it shrinks. An impossible start can overflow only
 on the actual first main line; later anchors move with their main text.
@@ -74,12 +120,37 @@ retain inset geometry and emits an explicit export warning. Deleting a series re
 entry from inset frames and moves its notes to series 0, as for ordinary stream routes.
 
 `catchwords:true` adds a generated catchword below each stream that has visible text on a later
-page. The word follows that stream's last rectangle, aligned right on right/single pages and
-left on left pages. Its 18-point row is part of the band geometry, so another stream cannot
+page. A stream reserves and prints its row only at its last text-bearing host on that physical
+page, including when a thread visits the page more than once. The word follows that stream's last rectangle at the paragraph's line end, left for
+right-to-left paragraphs and right for left-to-right paragraphs. Its 18-point row is part of the band geometry, so another stream cannot
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
-and colour at 9 points; a long word shrinks uniformly to fit its column. Ended and overset
+and colour at 9 points; a long word shrinks uniformly only to fit its column width.
+Row height never scales the catchword's glyph size. Alternatively,
+`catchwords:{"style":"Catchword"}` applies that character style. Its baseline is the
+preceding line's baseline plus the style's leading. An unsized style inherits the source stream's resolved size and leading at the catchword position. The reserved row starts at the
+preceding line's descent and ends at the catchword's descent. Boolean `true` retains
+the existing placement and 18-point row. An unknown style produces a composition warning and uses the
+9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
+remain valid in commands and native files. IDML warns that it loses styled catchwords.
+Host, route and series catchword style references follow character-style rename and
+delete-with-replacement, including undo.
+Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
+
+Routed frames opt in with `noteStream.catchword:true` (default `false`, omitted when false
+in native files). The host inset's catchword setting supplies their style and must also
+be enabled. `noteStream.catchword:{"style":"Route caption"}` overrides the style for that route.
+Series options accept `catchwordStyle:"Series caption"` to override the host style; a route style takes precedence.
+Only the last opted-in route frame of each series on a page reserves a row
+directly below its last composed line. Native saves preserve the opt-in flag; IDML warns
+that it loses it. A
+`followInset.after` follower clears that row. Its word comes from that series' next
+visible page; a finished series has no catchword. Side notes outside a stream's horizontal
+range do not lower its catchword row. Followers clear every inset stream's catchword row.
+When a neighbour widens into a finished stream's column, its widened lines start below
+the finished stream's full catchword row, including the catchword descent. This applies
+to commentary and main-text widening while preserving their baseline progression.
 
 A separate text-variable frame can use
 `variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`

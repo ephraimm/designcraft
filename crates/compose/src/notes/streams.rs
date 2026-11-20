@@ -97,6 +97,35 @@ pub(crate) fn fit_stream_page_for(
     opts: &ComposeOptions,
     only: Option<u64>,
 ) -> StreamPageFit {
+    let ranges = [input.main.clone()];
+    fit_stream_page_ranges(doc, story, input, before, opts, only, &ranges)
+}
+
+/// Fit the union of host visits to one physical page without consuming other pages' anchors.
+pub(crate) fn fit_stream_page_ranges(
+    doc: &Document,
+    story: &Story,
+    input: StreamPageInput<'_>,
+    before: &StreamState,
+    opts: &ComposeOptions,
+    only: Option<u64>,
+    ranges: &[Range<usize>],
+) -> StreamPageFit {
+    let selected = only.map(|id| [id]);
+    fit_stream_page_dynamic(doc, story, input, before, opts, (selected.as_ref().map(|ids| ids.as_slice()), ranges), |_, _, _, _, _| {})
+}
+
+/// Adjust each route using already fitted predecessors, while keeping each series cursor alive.
+pub(crate) fn fit_stream_page_dynamic(
+    doc: &Document,
+    story: &Story,
+    input: StreamPageInput<'_>,
+    before: &StreamState,
+    opts: &ComposeOptions,
+    selection: (Option<&[u64]>, &[Range<usize>]),
+    mut adjust: impl FnMut(usize, &mut [FrameSpec], &[FrameText], &mut Vec<String>, &mut ComposeOptions),
+) -> StreamPageFit {
+    let (only, ranges) = selection;
     let mut result = StreamPageFit {
         state: before.clone(),
         frames: input.areas.iter().map(|f| FrameText { frame: f.id, columns: f.columns(), ..Default::default() }).collect(),
@@ -108,15 +137,15 @@ pub(crate) fn fit_stream_page_for(
     let mut ids: Vec<_> = crate::stream_frame_specs(doc, story.id)
         .iter()
         .chain(input.areas)
-        .filter_map(|f| f.opts.note_stream.map(|s| s.series))
+        .filter_map(|f| f.opts.note_stream.as_ref().map(|s| s.series))
         .chain(before.series.keys().copied())
-        .filter(|id| only.is_none_or(|wanted| *id == wanted) && matches!(doc.note_options(*id).placement, NotePlacement::Stream))
+        .filter(|id| only.is_none_or(|wanted| wanted.contains(id)) && matches!(doc.note_options(*id).placement, NotePlacement::Stream))
         .collect();
     ids.sort_unstable();
     ids.dedup();
+    let mut contexts = HashMap::new();
     for series in ids {
         let mut notes = SeriesNotes::new(doc, story, series, false);
-        let allow_split = doc.note_options(series).allow_split;
         // Stream columns are a route, even when the series spans ordinary column feet.
         notes.span = false;
         if let Some(previous) = before.series.get(&series) {
@@ -131,60 +160,100 @@ pub(crate) fn fit_stream_page_for(
                 *number = previous.carry_number;
             }
         }
-        notes.number_refs(doc, input.main.clone(), Some(input.page), &mut SubstCtx::default());
-        let anchors: Vec<_> = notes.refs.iter().enumerate().filter_map(|(k, at)| (notes.owns(k) && input.main.contains(at)).then_some(k)).collect();
+        for range in ranges {
+            notes.number_refs(doc, range.clone(), Some(input.page), &mut SubstCtx::default());
+        }
+        let anchors: Vec<_> =
+            notes.refs.iter().enumerate().filter_map(|(k, at)| (notes.owns(k) && ranges.iter().any(|r| r.contains(at))).then_some(k)).collect();
         if opts.note_bands {
             notes.band_incoming = notes.carry.as_ref().map(|c| (c.k, c.heights.len()));
         }
         let had_carry = notes.carry.is_some();
-        let mut next = 0;
-        for (fi, frame) in input.areas.iter().enumerate().filter(|(_, f)| f.opts.note_stream.is_some_and(|s| s.series == series)) {
-            for (ci, area) in frame.columns().iter().enumerate() {
-                let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
-                if opts.note_bands {
-                    notes.band_previous = placed_parts(doc, story, &notes, input.areas, true)
-                        .last()
-                        .and_then(|(_, part)| part.text.frames.first().and_then(|f| f.lines.last()).map(|l| part.origin.y + l.baseline));
+        contexts.insert(series, (notes, anchors, 0usize, had_carry, None));
+    }
+    let mut sources = HashMap::new();
+    let mut areas = input.areas.to_vec();
+    for fi in 0..areas.len() {
+        let mut adjusted_opts = opts.clone();
+        adjust(fi, &mut areas, &result.frames, &mut result.warnings, &mut adjusted_opts);
+        let opts = &adjusted_opts;
+        let Some(frame) = areas.get(fi) else { continue };
+        let Some(series) = frame.opts.note_stream.as_ref().map(|s| s.series) else { continue };
+        let Some((notes, anchors, next, had_carry, previous)) = contexts.get_mut(&series) else { continue };
+        let allow_split = doc.note_options(series).allow_split;
+        notes.route_first_baseline = opts.note_first_baseline;
+        if let Some(out) = result.frames.get_mut(fi) {
+            out.columns = frame.columns();
+        }
+        for (ci, area) in frame.columns().iter().enumerate() {
+            // An inset-follow edge can close an area; even forced starts must skip it.
+            if area.height() <= 0.0 || area.width() <= 0.0 {
+                continue;
+            }
+            let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
+            if !opts.note_bands {
+                *previous = None;
+            }
+            notes.band_previous = previous.map(|(baseline, _, metrics)| (baseline, metrics));
+            notes.band_column = opts.note_bands.then_some((fi.saturating_add(1), ci));
+            notes.band_last = None;
+            let placed_start = notes.placed.len();
+            notes.band_span = opts.note_bands.then_some(area.height());
+            notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
+            let room = area.height();
+            if notes.carry.is_some() {
+                let available = room - notes.area_space(doc, column, &[], opts);
+                if notes.reserve(doc, column, &[], opts) <= room + 0.01 {
+                    notes.place_line(doc, column, &[], None, opts);
+                } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[], available, opts).filter(respects_keeps) {
+                    notes.place_line(doc, column, &[], Some(plan), opts);
                 }
-                notes.band_span = opts.note_bands.then_some(area.height());
-                notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
-                let room = area.height();
+            }
+            while notes.carry.is_none()
+                && let Some(&k) = anchors.get(*next)
+            {
+                let available = room - notes.area_space(doc, column, &[k], opts);
+                if notes.reserve(doc, column, &[k], opts) <= room + 0.01 {
+                    notes.place_line(doc, column, &[k], None, opts);
+                } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[k], available, opts).filter(respects_keeps) {
+                    notes.place_line(doc, column, &[k], Some(plan), opts);
+                } else if !*had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.as_ref().is_some_and(|range| range.contains(at))) {
+                    notes.place(doc, k, column, opts);
+                    if let Some(note) = story.notes.get(k) {
+                        result.warnings.push(format!(
+                            "Stream note {} in series {series} cannot start within its empty area on page {}",
+                            note.id,
+                            input.page.saturating_add(1)
+                        ));
+                    }
+                } else {
+                    break;
+                }
+                *next += 1;
                 if notes.carry.is_some() {
-                    let available = room - notes.area_space(doc, column, &[], opts);
-                    if notes.reserve(doc, column, &[], opts) <= room + 0.01 {
-                        notes.place_line(doc, column, &[], None, opts);
-                    } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[], available, opts).filter(respects_keeps) {
-                        notes.place_line(doc, column, &[], Some(plan), opts);
-                    }
-                    if notes.carry.is_some() {
-                        continue;
-                    }
+                    break;
                 }
-                while let Some(&k) = anchors.get(next) {
-                    let available = room - notes.area_space(doc, column, &[k], opts);
-                    if notes.reserve(doc, column, &[k], opts) <= room + 0.01 {
-                        notes.place_line(doc, column, &[k], None, opts);
-                    } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[k], available, opts).filter(respects_keeps) {
-                        notes.place_line(doc, column, &[k], Some(plan), opts);
-                    } else if !had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.as_ref().is_some_and(|range| range.contains(at))) {
-                        notes.place(doc, k, column, opts);
-                        if let Some(note) = story.notes.get(k) {
-                            result.warnings.push(format!(
-                                "Stream note {} in series {series} cannot start within its empty area on page {}",
-                                note.id,
-                                input.page.saturating_add(1)
-                            ));
-                        }
-                    } else {
-                        break;
-                    }
-                    next += 1;
-                    if notes.carry.is_some() {
-                        break;
-                    }
+            }
+            for part in placed_parts(
+                doc,
+                story,
+                notes,
+                &notes.placed[placed_start..],
+                *area,
+                ci,
+                opts.note_bands,
+                opts.note_first_baseline,
+                previous,
+                &mut sources,
+            ) {
+                if let Some(out) = result.frames.get_mut(fi) {
+                    out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
+                    super::append_note(&mut out.notes, part);
                 }
             }
         }
+    }
+    for (series, (notes, anchors, next, _, _)) in contexts {
         if let Some(&k) = anchors.get(next) {
             result.starts_fit = false;
             let anchor = notes.refs.get(k).copied();
@@ -202,65 +271,63 @@ pub(crate) fn fit_stream_page_for(
             .or_else(|| before.series.get(&series).map(|s| s.offset))
             .unwrap_or(0);
         result.state.series.insert(series, StreamSeriesState { offset, num: notes.num, key: notes.key, carry: notes.carry.clone(), carry_number });
-        for (fi, part) in placed_parts(doc, story, &notes, input.areas, opts.note_bands) {
-            if let Some(frame) = result.frames.get_mut(fi) {
-                frame.content_height = frame.content_height.max(part.rect.y1 - input.areas.get(fi).map_or(0.0, |f| f.area.y0));
-                super::append_note(&mut frame.notes, part);
-            }
-        }
     }
     result
 }
 
-fn placed_parts(doc: &Document, story: &Story, notes: &SeriesNotes, areas: &[FrameSpec], bands: bool) -> Vec<(usize, PlacedNote)> {
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PART_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[allow(clippy::too_many_arguments)]
+fn placed_parts(
+    doc: &Document,
+    story: &Story,
+    notes: &SeriesNotes,
+    parts: &[super::Placed],
+    area: Rect,
+    column: usize,
+    bands: bool,
+    first_baseline: Option<f64>,
+    previous: &mut Option<(f64, f64, super::NoteMetrics)>,
+    sources: &mut HashMap<usize, Arc<str>>,
+) -> Vec<PlacedNote> {
     let o = doc.note_options(notes.series);
     let mut out = Vec::new();
-    let mut previous: Option<(f64, f64)> = None;
-    for (fi, frame) in areas.iter().enumerate() {
-        for (ci, area) in frame.columns().iter().enumerate() {
-            if !bands {
-                previous = None;
-            }
-            let mut first = true;
-            for part in notes.placed.iter().filter(|p| p.fi == fi.saturating_add(1) && p.col == ci) {
-                let Some(note) = story.notes.get(part.k) else { continue };
-                let y = if bands && first && part.part > 0 && previous.is_some() {
-                    area.y0
-                } else {
-                    previous.map_or(area.y0 + o.space_before, |(baseline, _)| baseline + o.space_between + part.m.lead - part.m.first)
-                };
-                let bottom = y + part.m.last + part.m.descent;
-                let top = if first {
-                    y
-                } else {
-                    previous.map_or(y, |(_, bottom)| {
-                        if part.m.lead <= 0.0 {
-                            y + part.m.first - part.text.frames.first().and_then(|f| f.lines.first()).map_or(0.0, |l| l.ascent)
-                        } else {
-                            bottom + o.space_between
-                        }
-                    })
-                };
-                out.push((
-                    fi,
-                    PlacedNote {
-                        id: note.id,
-                        index: part.k,
-                        series: notes.series,
-                        reference_baseline: 0.0,
-                        overflow: bottom > area.y1 + 0.01,
-                        column: ci as u32,
-                        label: o.label(notes.numbers.get(part.k).copied().unwrap_or(o.start_at), true),
-                        origin: Point::new(area.x0, y),
-                        rect: Rect::new(area.x0, top, area.x1, bottom),
-                        text: part.text.clone(),
-                        source: Arc::from(note.text.text.as_str()),
-                    },
-                ));
-                previous = Some((y + part.m.last, bottom));
-                first = false;
-            }
-        }
+    let mut first = true;
+    for part in parts {
+        #[cfg(test)]
+        PART_VISITS.with(|n| n.set(n.get() + 1));
+        let Some(note) = story.notes.get(part.k) else { continue };
+        let y = if let Some(baseline) = first_baseline.filter(|_| first && !bands) {
+            area.y0 + baseline - part.m.first
+        } else if bands && first && part.part > 0 && previous.is_some() {
+            area.y0
+        } else {
+            part.m.origin(area.y0, previous.map(|(baseline, _, metrics)| (baseline, metrics)), o.space_before, o.space_between)
+        };
+        let bottom = y + part.m.last + part.m.descent;
+        let top = if first {
+            y
+        } else {
+            previous.map_or(y, |(_, bottom, _)| if part.m.lead <= 0.0 { y + part.m.first - part.m.ascent } else { bottom + o.space_between })
+        };
+        out.push(PlacedNote {
+            id: note.id,
+            index: part.k,
+            series: notes.series,
+            reference_baseline: 0.0,
+            overflow: bottom > area.y1 + 0.01,
+            column: column as u32,
+            label: o.label(notes.numbers.get(part.k).copied().unwrap_or(o.start_at), true),
+            origin: Point::new(area.x0, y),
+            rect: Rect::new(area.x0, top, area.x1, bottom),
+            text: part.text.clone(),
+            source: sources.entry(part.k).or_insert_with(|| Arc::from(note.text.text.as_str())).clone(),
+        });
+        *previous = Some((y + part.m.last, bottom, part.m));
+        first = false;
     }
     out
 }
@@ -303,7 +370,7 @@ impl StreamComposer {
     }
 
     pub(super) fn has_route(&self, series: u64) -> bool {
-        self.inset_series.contains(&series) || self.routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == series))
+        self.inset_series.contains(&series) || self.routes.iter().any(|f| f.opts.note_stream.as_ref().is_some_and(|s| s.series == series))
     }
 
     pub(super) fn snapshot(&self) -> usize {
@@ -360,7 +427,8 @@ impl StreamComposer {
             .filter(|note| matches!(doc.note_options(note.series).placement, NotePlacement::Stream))
             .all(|note| {
                 let series = doc.note_series_id(note.series);
-                !self.has_route(series) || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.is_some_and(|s| s.series == series))
+                !self.has_route(series)
+                    || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.as_ref().is_some_and(|s| s.series == series))
             });
         let can_force = !has_main && !fit.had_continuation && routes_present;
         if !fit.starts_fit && !can_force {
@@ -412,5 +480,91 @@ impl StreamComposer {
             }
         }
         out.frames.extend(frames);
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use designcraft_geom::{Affine, Shape};
+
+    #[test]
+    fn run_in_drop_cap_band_origin_keeps_glyph_ink_clear_of_exclusion() {
+        let mut doc = Document::new(&Default::default());
+        doc.footnote_options.run_in = true;
+        doc.footnote_options.body_hidden = true;
+        doc.footnote_options.space_between = 7.0;
+        let (_, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(0.0, 120.0, 300.0, 600.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        let story = doc.story_mut(sid).unwrap();
+        for text in ["Rashi commentary words. ".repeat(16), "Next comment.".into()] {
+            story.insert_note(story.len(), &text, Default::default()).unwrap();
+        }
+        let text = &mut Arc::make_mut(&mut story.notes[0]).text;
+        text.format_paras(0..text.len(), |p| {
+            p.para.drop_cap_chars = Some(1);
+            p.para.drop_cap_lines = Some(3);
+        });
+        let mut frame = crate::frame_specs(&doc, sid).remove(0);
+        let obstacle = Rect::new(0.0, 40.0, 220.0, 140.0);
+        frame.exclusions.push(crate::Exclusion {
+            rect: obstacle,
+            mode: designcraft_doc::WrapMode::BoundingBox,
+            side: designcraft_doc::WrapSide::BothSides,
+            contour: None,
+            after: None,
+            anchor_baseline: None,
+        });
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        let previous = (60.0, super::super::NoteMetrics::default());
+        notes.band_previous = Some(previous);
+        notes.band_column = Some((1, 0));
+        let column = NoteColumn { frame_index: 1, column_index: 0, width: 300.0, frame: &frame };
+        let opts = ComposeOptions { note_bands: true, ..Default::default() };
+        super::super::ORIGIN_LAST.with(|n| n.set(None));
+        notes.place(&doc, 0, column, &opts);
+        let obstacle_origin = super::super::ORIGIN_LAST.with(|n| n.get()).unwrap();
+        assert!(notes.placed[0].text.frames[0].lines.iter().any(|l| l.drop_cap.is_some()));
+        notes.place(&doc, 1, column, &opts);
+        let run_in_origin = super::super::ORIGIN_LAST.with(|n| n.get()).unwrap();
+        assert!((notes.placed[1].m.lead + doc.footnote_options.space_between).abs() < 0.01, "must exercise a shared run-in baseline");
+        let mut placement_previous = Some((previous.0, previous.0, previous.1));
+        let placed = placed_parts(
+            &doc,
+            doc.story(sid).unwrap(),
+            &notes,
+            &notes.placed,
+            frame.area,
+            0,
+            true,
+            None,
+            &mut placement_previous,
+            &mut HashMap::new(),
+        );
+        let db = designcraft_fonts::FontDb::global();
+        let mut ink_count = 0;
+        let mut beside = 0;
+        for note in &placed {
+            for line in note.text.frames.iter().flat_map(|f| &f.lines) {
+                for g in line.glyphs.iter().filter(|g| g.visible) {
+                    let outline = db.outline(&g.face, g.gid);
+                    if outline.elements().is_empty() {
+                        continue;
+                    }
+                    let transform =
+                        Affine::translate((note.origin.x + g.x, note.origin.y + line.baseline + g.y)) * Affine::scale_non_uniform(g.sx, g.sy);
+                    let ink = (transform * outline.as_ref().clone()).bounding_box();
+                    ink_count += 1;
+                    if ink.y0 < obstacle.y1 && ink.y1 > obstacle.y0 {
+                        beside += 1;
+                    }
+                    assert!(ink.intersect(obstacle).area() < 0.01, "glyph {:?} ink {ink:?} intersects {obstacle:?}", g.rendered_char);
+                }
+            }
+        }
+        assert!(ink_count > 0 && beside > 0, "must exercise actual ink beside the exclusion");
+        assert!((obstacle_origin - placed[0].origin.y).abs() < 0.01, "obstacle {obstacle_origin}, placed {}", placed[0].origin.y);
+        assert!((run_in_origin - placed[1].origin.y).abs() < 0.01, "obstacle {run_in_origin}, placed {}", placed[1].origin.y);
     }
 }

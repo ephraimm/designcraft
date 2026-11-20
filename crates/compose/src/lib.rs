@@ -1059,6 +1059,8 @@ pub struct ComposeOptions {
     pub inset_measure: bool,
     /// Replay note parts as bands of one page rather than separate routed frames.
     pub note_bands: bool,
+    /// Local baseline of a routed foot following a catchword row.
+    pub note_first_baseline: Option<f64>,
     /// Page name for page-number markers when the story is composed for a specific page (parent items).
     pub page_name: Option<String>,
     /// Section marker text when the story is composed for a specific page (parent items).
@@ -1180,7 +1182,7 @@ pub fn stream_frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
     for spread in &doc.spreads {
         for item in &spread.items {
             item.walk(&mut |it| {
-                if it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == sid) {
+                if it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == sid) {
                     ids.push(it.id);
                 }
             });

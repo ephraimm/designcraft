@@ -360,13 +360,14 @@ impl Document {
         let series = source.map(|src| self.adopt_note_series_ids(src));
         let mut retarget = |item: &mut Item| {
             if let Some(tf) = item.text_frame_mut() {
-                tf.options.note_stream = tf.options.note_stream.and_then(|route| {
+                tf.options.note_stream = tf.options.note_stream.take().and_then(|route| {
                     copies.get(&route.story).map(|host| crate::NoteStream {
                         story: *host,
                         series: match (&series, source) {
                             (Some(ids), Some(src)) => ids.get(&src.note_series_id(route.series)).copied().unwrap_or(0),
                             _ => route.series,
                         },
+                        ..route
                     })
                 });
                 if let (Some(inset), Some(ids), Some(src)) = (&mut tf.options.inset_columns, &series, source) {
@@ -611,7 +612,7 @@ mod tests {
         source.story_mut(host).unwrap().note_mut(note).unwrap().series = 1;
         for (story, index) in [(container, 0), (root, 1)] {
             Arc::make_mut(&mut source.story_mut(story).unwrap().objects[index]).item.text_frame_mut().unwrap().options.note_stream =
-                Some(crate::NoteStream { story: host, series: 1 });
+                Some(crate::NoteStream { story: host, series: 1, catchword: false.into(), follow_inset: None });
         }
         for cross_document in [false, true] {
             let (mut destination, target) = if cross_document { doc() } else { (source.clone(), root) };
@@ -631,8 +632,8 @@ mod tests {
             let copied_container = copy.objects[0].item.text_frame().unwrap().story;
             let series = destination.story(copied_host).unwrap().notes[0].series;
             for route in [
-                copy.objects[1].item.text_frame().unwrap().options.note_stream.unwrap(),
-                destination.story(copied_container).unwrap().objects[0].item.text_frame().unwrap().options.note_stream.unwrap(),
+                copy.objects[1].item.text_frame().unwrap().options.note_stream.as_ref().unwrap(),
+                destination.story(copied_container).unwrap().objects[0].item.text_frame().unwrap().options.note_stream.as_ref().unwrap(),
             ] {
                 assert_eq!(route.story, copied_host);
                 assert_eq!(route.series, series);
@@ -949,7 +950,7 @@ mod tests {
         let mapped = root_config.streams[1].series.unwrap();
         assert_ne!(mapped, 1);
         assert_eq!(nested_config.streams[1].series, Some(mapped));
-        assert!(root_config.catchwords && nested_config.catchwords);
+        assert!(root_config.catchwords.enabled() && nested_config.catchwords.enabled());
         assert!(matches!(destination.note_options(mapped).placement, crate::NotePlacement::Stream));
         let story = destination.story_mut(target).unwrap();
         story.insert_story(story.len(), &copy);

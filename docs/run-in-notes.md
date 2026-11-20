@@ -18,6 +18,8 @@ on the preceding note's last line. The separator precedes its number and text.
 Space Between Footnotes does not apply to a run-in note, including when its
 first word needs the next line. First-line indent, space before and drop caps
 apply at paragraph starts. Further paragraphs keep their own formats.
+Inset commentary bands position wrap exclusions from the same resolved run-in
+baseline and drop-cap spacing used for placed notes, including split-part replay.
 With `bodyHidden`, the run-in separator remains while the note number and its
 separator are hidden, in both column feet and stream frames.
 Split notes retain source byte ranges and replay the first part's line position

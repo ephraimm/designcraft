@@ -23,11 +23,18 @@ use designcraft_doc::{Document, FOOTNOTE_REF, ItemId, Story, TextFrameOptions};
 use designcraft_geom::{Point, Rect};
 
 use crate::shape::{Glyph, SubstCtx};
-use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, PlacedNote};
+use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, FrameText, PlacedNote};
 
 pub(crate) mod streams;
-pub(crate) use streams::fit_stream_page_for;
 pub use streams::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
+pub(crate) use streams::{fit_stream_page_dynamic, fit_stream_page_for};
+
+#[cfg(test)]
+thread_local! {
+    static ORIGIN_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ORIGIN_LAST: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+    static ORIGIN_RECHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// A footnote assigned to a column.
 pub(crate) struct Placed {
@@ -52,6 +59,47 @@ pub(crate) struct NoteMetrics {
     pub(super) lead: f64,
     /// Descent of the last line.
     pub(super) descent: f64,
+    ascent: f64,
+    cap: Option<(f64, f64)>,
+}
+
+impl NoteMetrics {
+    fn from_frame(frame: &FrameText, owner: usize, run_in: Option<&RunIn>, space_between: f64, first_part: bool) -> Option<Self> {
+        let a = frame.lines.first()?;
+        let z = frame.lines.last()?;
+        let cap = frame.lines.iter().filter_map(|l| l.drop_cap).map(|c| (c.rect.y0, c.rect.y1)).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+        Some(Self {
+            owner: if z.para == 0 { run_in.map_or(owner, |run| run.owner) } else { owner },
+            first: a.baseline,
+            last: z.baseline,
+            lead: if first_part { run_in.map_or(a.leading, |run| if run.inline { 0.0 } else { a.leading } - space_between) } else { a.leading },
+            ascent: a.ascent,
+            descent: cap.map_or(z.descent, |(_, bottom)| z.descent.max(bottom - z.baseline)),
+            cap,
+        })
+    }
+
+    /// Obstacles and final placement must share the resolved run-in and drop-cap origin.
+    fn origin(self, top: f64, previous: Option<(f64, Self)>, space_before: f64, space_between: f64) -> f64 {
+        previous
+            .map_or(top + space_before + self.top_padding(), |(baseline, metrics)| baseline + space_between + metrics.advance_to(self) - self.first)
+    }
+
+    fn top_padding(self) -> f64 {
+        self.cap.map_or(0.0, |(top, _)| (-top).max(0.0))
+    }
+
+    /// Preserve normal baseline spacing, adding room only for overhanging drop-cap ink.
+    fn advance_to(self, next: Self) -> f64 {
+        let mut step = next.lead;
+        if let Some((_, bottom)) = self.cap {
+            step = step.max(bottom - self.last + next.ascent);
+        }
+        if let Some((top, _)) = next.cap {
+            step = step.max(self.descent + next.first - top);
+        }
+        step
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -65,17 +113,17 @@ pub(crate) struct NoteColumn<'a> {
 /// Height of footnotes stacked baseline to baseline, from the top of the footnote area to the
 /// last footnote's descent.
 fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_between: f64) -> f64 {
-    let mut h: Option<f64> = None;
+    let mut h: Option<(f64, NoteMetrics)> = None;
     let mut descent = 0.0;
     for m in notes {
         let last = match h {
-            None => m.last,
-            Some(prev) => prev + space_between + m.lead + (m.last - m.first),
+            None => m.last + m.top_padding(),
+            Some((prev, metrics)) => prev + space_between + metrics.advance_to(*m) + (m.last - m.first),
         };
-        h = Some(last);
+        h = Some((last, *m));
         descent = m.descent;
     }
-    h.map_or(0.0, |h| h + descent)
+    h.map_or(0.0, |(h, _)| h + descent)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -152,7 +200,10 @@ fn append_note(notes: &mut Vec<PlacedNote>, note: PlacedNote) {
 
 pub(super) struct SeriesNotes {
     series: u64,
-    band_previous: Option<f64>,
+    band_previous: Option<(f64, NoteMetrics)>,
+    route_first_baseline: Option<f64>,
+    band_column: Option<(usize, usize)>,
+    band_last: Option<(f64, NoteMetrics)>,
     band_continued: bool,
     band_span: Option<f64>,
     band_spans: HashMap<(usize, usize), f64>,
@@ -181,6 +232,9 @@ impl SeriesNotes {
         Self {
             series,
             band_previous: None,
+            route_first_baseline: None,
+            band_column: None,
+            band_last: None,
             band_continued: false,
             band_span: None,
             band_spans: HashMap::new(),
@@ -264,6 +318,16 @@ impl SeriesNotes {
             }
         }
         v
+    }
+
+    /// New notes keep the preceding baseline; their origin can precede the band's top.
+    /// Wrapping obstacles must use this same origin, including for split-part replay.
+    fn band_note_origin(&self, doc: &Document, f: &FrameSpec, metrics: NoteMetrics) -> f64 {
+        #[cfg(test)]
+        ORIGIN_VISITS.with(|n| n.set(n.get() + 1));
+        let o = doc.note_options(self.series);
+        let previous = self.band_last.or(self.band_previous);
+        metrics.origin(f.area.y0, previous, o.space_before, o.space_between)
     }
 
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> Part {
@@ -421,10 +485,39 @@ impl SeriesNotes {
             first.para.drop_cap_chars = Some(0);
             first.para.list_type = Some(designcraft_doc::ListType::None);
         }
-        let cs = crate::compose(doc, &text, &specs, &nopts);
-        // A replay's first part keeps its original width, even when the current band narrows.
-        // Testing it against the current width could change an already emitted source cut.
+        // A replay must test overlap against the first part's original width.
         let first_width = specs.first().map_or(w, |spec| spec.area.width());
+        let mut cs = crate::compose(doc, &text, &specs, &nopts);
+        if opts.note_bands && part == 0 && !f.exclusions.is_empty() {
+            let mut positioned = specs;
+            let mut applied = 0.0;
+            // A different first-line break can change leading and therefore the note origin.
+            for _ in 0..2 {
+                let Some(metrics) = cs.frames.first().and_then(|frame| NoteMetrics::from_frame(frame, k, run_in, o.space_between, true)) else {
+                    break;
+                };
+                let origin = self.band_note_origin(doc, f, metrics);
+                #[cfg(test)]
+                {
+                    ORIGIN_LAST.with(|n| n.set(Some(origin)));
+                    ORIGIN_RECHECKS.with(|n| n.set(n.get() + 1));
+                }
+                let desired = f.area.y0 - origin;
+                let delta = desired - applied;
+                if delta.abs() <= 0.01 {
+                    break;
+                }
+                if let Some(first) = positioned.first_mut() {
+                    for exclusion in &mut first.exclusions {
+                        exclusion.rect = exclusion.rect + designcraft_geom::Vec2::new(0.0, delta);
+                        exclusion.contour =
+                            exclusion.contour.as_ref().map(|c| c.clone().transformed(designcraft_geom::Affine::translate((0.0, delta))));
+                    }
+                }
+                cs = crate::compose(doc, &text, &positioned, &nopts);
+                applied = desired;
+            }
+        }
         if let Some(run) = run_in.filter(|run| run.inline)
             && cs.frames.first().and_then(|f| f.lines.first()).is_some_and(|line| {
                 let (pp, _) = doc.styles.resolve_para(&run.para);
@@ -450,14 +543,7 @@ impl SeriesNotes {
             .iter()
             .enumerate()
             .map(|(i, ft)| {
-                let (Some(a), Some(z)) = (ft.lines.first(), ft.lines.last()) else { return None };
-                let m = NoteMetrics {
-                    owner: if z.para == 0 { run_in.map_or(k, |run| run.owner) } else { k },
-                    first: a.baseline,
-                    last: z.baseline,
-                    lead: if i == 0 { run_in.map_or(a.leading, |run| if run.inline { 0.0 } else { a.leading } - o.space_between) } else { a.leading },
-                    descent: z.descent,
-                };
+                let m = NoteMetrics::from_frame(ft, k, run_in, o.space_between, i == 0)?;
                 let mut frame = ft.clone();
                 // Body frame ranges exclude paragraph separators; parts own those bytes too.
                 frame.range.end = cs.frames.iter().skip(i.saturating_add(1)).find(|f| !f.lines.is_empty()).map_or(note.text.len(), |f| f.range.start);
@@ -650,6 +736,7 @@ impl SeriesNotes {
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
                 let mut exclusions = self.carry.as_ref().filter(|c| c.k == k).map_or_else(Vec::new, |c| c.exclusions.clone());
                 if opts.note_bands {
+                    let origin = if part == 0 { self.band_note_origin(doc, column.frame, original.1) } else { column.frame.area.y0 };
                     exclusions.push((
                         part,
                         column
@@ -657,10 +744,11 @@ impl SeriesNotes {
                             .exclusions
                             .iter()
                             .map(|e| crate::Exclusion {
-                                rect: e.rect + designcraft_geom::Vec2::new(-column.frame.area.x0, -column.frame.area.y0),
-                                contour: e.contour.as_ref().map(|c| {
-                                    c.clone().transformed(designcraft_geom::Affine::translate((-column.frame.area.x0, -column.frame.area.y0)))
-                                }),
+                                rect: e.rect + designcraft_geom::Vec2::new(-column.frame.area.x0, -origin),
+                                contour: e
+                                    .contour
+                                    .as_ref()
+                                    .map(|c| c.clone().transformed(designcraft_geom::Affine::translate((-column.frame.area.x0, -origin)))),
                                 ..e.clone()
                             })
                             .collect(),
@@ -702,7 +790,8 @@ impl SeriesNotes {
         let o = doc.note_options(self.series);
         match (self.band_previous, ms.first()) {
             (Some(_), _) if self.band_continued => 0.0,
-            (Some(previous), Some(m)) => previous + o.space_between + m.lead - m.first - column.frame.area.y0,
+            (Some(previous), Some(m)) => m.origin(column.frame.area.y0, Some(previous), o.space_before, o.space_between) - column.frame.area.y0,
+            (_, Some(first)) => self.route_first_baseline.map_or(o.space_before, |baseline| baseline - first.first),
             _ => o.space_before,
         }
     }
@@ -716,12 +805,20 @@ impl SeriesNotes {
         let previous =
             self.placed.iter().rev().find(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| (p.m.owner, p.text.clone()));
         let (text, m) = self.compose_after(doc, k, column, opts, previous.as_ref().map(|(k, t)| (*k, t.as_ref())));
-        self.push(k, 0, text, m, column);
+        self.push(doc, k, 0, text, m, column);
     }
 
-    fn push(&mut self, k: usize, part: usize, text: Arc<ComposedStory>, m: NoteMetrics, column: NoteColumn<'_>) {
+    fn push(&mut self, doc: &Document, k: usize, part: usize, text: Arc<ComposedStory>, m: NoteMetrics, column: NoteColumn<'_>) {
         if self.placed.iter().any(|p| p.k == k && p.part == part) {
             return;
+        }
+        if self.band_column == Some((column.frame_index, column.column_index)) {
+            let y = if part > 0 && self.band_last.is_none() && self.band_previous.is_some() {
+                column.frame.area.y0
+            } else {
+                self.band_note_origin(doc, column.frame, m)
+            };
+            self.band_last = Some((y + m.last, m));
         }
         self.placed.push(Placed { k, part, fi: column.frame_index, col: column.column_index, m, text });
     }
@@ -732,12 +829,12 @@ impl SeriesNotes {
         if let Some(c) = self.pending(column) {
             if plan.as_ref().is_some_and(|p| p.k == c.k) {
                 if let Some(p) = plan {
-                    self.place_split(p, column);
+                    self.place_split(doc, p, column);
                 }
                 return self.placed.len() != before;
             }
             if let Some((text, m)) = self.remainder(doc, &c, column, opts) {
-                self.push(c.k, c.heights.len(), text, m, column);
+                self.push(doc, c.k, c.heights.len(), text, m, column);
             }
             self.carry = None;
         }
@@ -748,18 +845,18 @@ impl SeriesNotes {
             self.place(doc, k, column, opts);
         }
         if let Some(p) = plan {
-            self.place_split(p, column);
+            self.place_split(doc, p, column);
         }
         self.placed.len() != before
     }
 
-    fn place_split(&mut self, plan: SplitPlan, column: NoteColumn<'_>) {
+    fn place_split(&mut self, doc: &Document, plan: SplitPlan, column: NoteColumn<'_>) {
         let part = plan.heights.len().saturating_sub(1);
         if let Some(span) = plan.band_span {
             self.band_spans.insert((plan.k, part), span);
             self.cache.clear();
         }
-        self.push(plan.k, part, plan.text, plan.m, column);
+        self.push(doc, plan.k, part, plan.text, plan.m, column);
         self.carry = plan.remainder.then_some(Carry {
             k: plan.k,
             heights: plan.heights,
@@ -799,13 +896,13 @@ impl SeriesNotes {
                 });
             }
             // Previous footnote's last baseline and bottom.
-            let mut prev: Option<(f64, f64)> = None;
+            let mut prev: Option<(f64, f64, NoteMetrics)> = None;
             for p in here {
                 let Some(note) = story.notes.get(p.k) else { continue };
                 let (y, y0) = match prev {
-                    None => (top, top),
-                    Some((last, bottom)) => {
-                        let first = last + o.space_between + p.m.lead;
+                    None => (top + p.m.top_padding(), top),
+                    Some((last, bottom, metrics)) => {
+                        let first = last + o.space_between + metrics.advance_to(p.m);
                         let ascent = p.text.frames.first().and_then(|f| f.lines.first()).map_or(0.0, |l| l.ascent);
                         (first - p.m.first, if p.m.lead <= 0.0 { first - ascent } else { (bottom + o.space_between).min(first) })
                     }
@@ -827,7 +924,7 @@ impl SeriesNotes {
                         source: Arc::from(note.text.text.as_str()),
                     },
                 );
-                prev = Some((y + p.m.last, y1));
+                prev = Some((y + p.m.last, y1, p.m));
             }
         }
     }
@@ -920,6 +1017,77 @@ pub(crate) use page_margins::stack_page_margins;
 mod tests {
     use super::*;
     use designcraft_doc::{ParaFormat, SpreadRef, build::NewDocument, story};
+
+    fn band_fixture(text: &str) -> (Document, designcraft_doc::StoryId, FrameSpec) {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.footnote_options.first_baseline = designcraft_doc::FirstBaseline::Ascent;
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 120.0, 300.0, 1000.0), doc.default_layer(), "Body", Default::default()).unwrap();
+        doc.story_mut(sid).unwrap().insert_note(0, text, Default::default()).unwrap();
+        let frame = crate::frame_specs(&doc, sid).remove(0);
+        (doc, sid, frame)
+    }
+
+    #[test]
+    fn band_origin_queries_do_not_walk_preceding_parts() {
+        let (doc, sid, frame) = band_fixture("Note");
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        notes.band_column = Some((1, 0));
+        notes.band_previous = Some((0.0, NoteMetrics::default()));
+        for k in 0..100 {
+            notes.push(
+                &doc,
+                k,
+                0,
+                Arc::new(ComposedStory::default()),
+                NoteMetrics { first: 10.0, last: 10.0, lead: 12.0, descent: 2.0, ..Default::default() },
+                NoteColumn { frame_index: 1, column_index: 0, width: 300.0, frame: &frame },
+            );
+        }
+        ORIGIN_VISITS.with(|n| n.set(0));
+        for _ in 0..128 {
+            assert_eq!(notes.band_note_origin(&doc, &frame, NoteMetrics { first: 10.0, lead: 12.0, ..Default::default() }), 1202.0);
+        }
+        assert!(ORIGIN_VISITS.with(|n| n.get()) <= 128, "origin visits {}", ORIGIN_VISITS.with(|n| n.get()));
+    }
+
+    #[test]
+    fn band_origin_is_rechecked_when_wrap_changes_first_line_leading() {
+        let (mut doc, sid, mut frame) = band_fixture("aa aa LARGE trailing words");
+        let text = &mut Arc::make_mut(&mut doc.story_mut(sid).unwrap().notes[0]).text;
+        text.format_chars(0..text.len(), |f| {
+            f.over.size = Some(12.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(14.4));
+        });
+        let at = text.text.find("LARGE").unwrap();
+        text.format_chars(at..at + 5, |f| {
+            f.over.size = Some(30.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(80.0));
+            f.over.no_break = Some(true);
+        });
+        frame.exclusions.push(crate::Exclusion {
+            rect: Rect::new(0.0, -100.0, 230.0, 120.0),
+            mode: designcraft_doc::WrapMode::BoundingBox,
+            side: designcraft_doc::WrapSide::BothSides,
+            contour: None,
+            after: None,
+            anchor_baseline: None,
+        });
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        notes.band_column = Some((1, 0));
+        notes.band_previous = Some((30.0, NoteMetrics::default()));
+        ORIGIN_LAST.with(|n| n.set(None));
+        ORIGIN_RECHECKS.with(|n| n.set(0));
+        let part = notes.compose(&doc, 0, 300.0, &frame, &ComposeOptions { note_bands: true, ..Default::default() });
+        assert!((part.1.lead - 14.4).abs() < 0.01, "first leading {}", part.1.lead);
+        let expected = notes.band_note_origin(&doc, &frame, part.1);
+        assert!(
+            (ORIGIN_LAST.with(|n| n.get()).unwrap() - expected).abs() < 0.01,
+            "shifted origin {:?}, final origin {expected}",
+            ORIGIN_LAST.with(|n| n.get())
+        );
+        assert!(ORIGIN_RECHECKS.with(|n| n.get()) <= 2);
+    }
 
     #[test]
     fn note_cache_distinguishes_parent_prefixes_in_current_and_earlier_parts() {
