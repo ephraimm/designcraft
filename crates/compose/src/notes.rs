@@ -392,18 +392,10 @@ impl SeriesNotes {
     /// New notes keep the preceding baseline; their origin can precede the band's top.
     /// Wrapping obstacles must use this same origin, including for split-part replay.
     fn band_note_origin(&self, doc: &Document, f: &FrameSpec, metrics: NoteMetrics) -> f64 {
+        #[cfg(test)]
+        ORIGIN_VISITS.with(|n| n.set(n.get() + 1));
         let o = doc.note_options(self.series);
-        let mut previous = self.band_previous;
-        let mut at_start = true;
-        for part in self.placed.iter().filter(|p| self.band_column == Some((p.fi, p.col))) {
-            let y = if at_start && part.part > 0 && previous.is_some() {
-                f.area.y0
-            } else {
-                part.m.origin(f.area.y0, previous, o.space_before, o.space_between)
-            };
-            previous = Some((y + part.m.last, part.m));
-            at_start = false;
-        }
+        let previous = self.band_last.or(self.band_previous);
         metrics.origin(f.area.y0, previous, o.space_before, o.space_between)
     }
 
@@ -595,16 +587,28 @@ impl SeriesNotes {
             first.para.drop_cap_chars = Some(0);
             first.para.list_type = Some(designcraft_doc::ListType::None);
         }
+        // A replay must test overlap against the first part's original width.
+        let first_width = specs.first().map_or(w, |spec| spec.area.width());
         let mut cs = crate::compose(doc, &text, &specs, &nopts);
-        if opts.note_bands
-            && part == 0
-            && !f.exclusions.is_empty()
-            && let Some(metrics) = cs.frames.first().and_then(|frame| NoteMetrics::from_frame(frame, k, run_in, o.space_between, true))
-        {
-            let origin = self.band_note_origin(doc, f, metrics);
-            let delta = f.area.y0 - origin;
-            if delta.abs() > 0.01 {
-                let mut positioned = specs.clone();
+        if opts.note_bands && part == 0 && !f.exclusions.is_empty() {
+            let mut positioned = specs;
+            let mut applied = 0.0;
+            // A different first-line break can change leading and therefore the note origin.
+            for _ in 0..2 {
+                let Some(metrics) = cs.frames.first().and_then(|frame| NoteMetrics::from_frame(frame, k, run_in, o.space_between, true)) else {
+                    break;
+                };
+                let origin = self.band_note_origin(doc, f, metrics);
+                #[cfg(test)]
+                {
+                    ORIGIN_LAST.with(|n| n.set(Some(origin)));
+                    ORIGIN_RECHECKS.with(|n| n.set(n.get() + 1));
+                }
+                let desired = f.area.y0 - origin;
+                let delta = desired - applied;
+                if delta.abs() <= 0.01 {
+                    break;
+                }
                 if let Some(first) = positioned.first_mut() {
                     for exclusion in &mut first.exclusions {
                         exclusion.rect = exclusion.rect + designcraft_geom::Vec2::new(0.0, delta);
@@ -613,11 +617,9 @@ impl SeriesNotes {
                     }
                 }
                 cs = crate::compose(doc, &text, &positioned, &nopts);
+                applied = desired;
             }
         }
-        // A replay's first part keeps its original width, even when the current band narrows.
-        // Testing it against the current width could change an already emitted source cut.
-        let first_width = specs.first().map_or(w, |spec| spec.area.width());
         if let Some(run) = run_in.filter(|run| run.inline)
             && cs.frames.first().and_then(|f| f.lines.first()).is_some_and(|line| {
                 let (pp, _) = doc.styles.resolve_para(&run.para);
@@ -951,7 +953,7 @@ impl SeriesNotes {
         let o = doc.note_options(self.series);
         match (self.band_previous, ms.first()) {
             (Some(_), _) if self.band_continued => 0.0,
-            (Some((previous, _)), Some(m)) => previous + o.space_between + m.lead - m.first - column.frame.area.y0,
+            (Some(previous), Some(m)) => m.origin(column.frame.area.y0, Some(previous), o.space_before, o.space_between) - column.frame.area.y0,
             (_, Some(first)) => self.route_first_baseline.map_or(o.space_before, |baseline| baseline - first.first),
             _ => o.space_before,
         }
@@ -972,6 +974,14 @@ impl SeriesNotes {
     fn push(&mut self, doc: &Document, k: usize, part: usize, text: Arc<ComposedStory>, m: NoteMetrics, column: NoteColumn<'_>) {
         if self.placed.iter().any(|p| p.source == NoteSource::Story(k) && p.part == part) {
             return;
+        }
+        if self.band_column == Some((column.frame_index, column.column_index)) {
+            let y = if part > 0 && self.band_last.is_none() && self.band_previous.is_some() {
+                column.frame.area.y0
+            } else {
+                self.band_note_origin(doc, column.frame, m)
+            };
+            self.band_last = Some((y + m.last, m));
         }
         let Some(note) = self.notes.get(k).cloned() else { return };
         let label = doc.note_options(self.series).label(self.numbers.get(k).copied().unwrap_or(doc.note_options(self.series).start_at), true);
@@ -1237,20 +1247,20 @@ mod tests {
         let (doc, sid, frame) = band_fixture("Note");
         let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
         notes.band_column = Some((1, 0));
-        notes.band_previous = Some(0.0);
+        notes.band_previous = Some((0.0, NoteMetrics::default()));
         for k in 0..100 {
             notes.push(
                 &doc,
                 k,
                 0,
                 Arc::new(ComposedStory::default()),
-                NoteMetrics { first: 10.0, last: 10.0, lead: 12.0, descent: 2.0 },
+                NoteMetrics { first: 10.0, last: 10.0, lead: 12.0, descent: 2.0, ..Default::default() },
                 NoteColumn { frame_index: 1, column_index: 0, width: 300.0, frame: &frame },
             );
         }
         ORIGIN_VISITS.with(|n| n.set(0));
         for _ in 0..128 {
-            assert_eq!(notes.band_note_origin(&doc, &frame, 10.0, 12.0), 1202.0);
+            assert_eq!(notes.band_note_origin(&doc, &frame, NoteMetrics { first: 10.0, lead: 12.0, ..Default::default() }), 1202.0);
         }
         assert!(ORIGIN_VISITS.with(|n| n.get()) <= 128, "origin visits {}", ORIGIN_VISITS.with(|n| n.get()));
     }
@@ -1279,12 +1289,12 @@ mod tests {
         });
         let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
         notes.band_column = Some((1, 0));
-        notes.band_previous = Some(30.0);
+        notes.band_previous = Some((30.0, NoteMetrics::default()));
         ORIGIN_LAST.with(|n| n.set(None));
         ORIGIN_RECHECKS.with(|n| n.set(0));
         let part = notes.compose(&doc, 0, 300.0, &frame, &ComposeOptions { note_bands: true, ..Default::default() });
         assert!((part.1.lead - 14.4).abs() < 0.01, "first leading {}", part.1.lead);
-        let expected = notes.band_note_origin(&doc, &frame, part.1.first, part.1.lead);
+        let expected = notes.band_note_origin(&doc, &frame, part.1);
         assert!(
             (ORIGIN_LAST.with(|n| n.get()).unwrap() - expected).abs() < 0.01,
             "shifted origin {:?}, final origin {expected}",

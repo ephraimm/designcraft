@@ -9,6 +9,8 @@
 - 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).
 
 - 2026-11-19: each note series has an independent `catchwordContinuation`, with command validation, native persistence and an IDML loss warning. Story continuation remains main-stream-only (#2869).
+- 2026-11-20: D69 run-in commentary bands translate wrap exclusions from the same resolved baseline and drop-cap metrics as final placement; glyph-outline regression coverage guards the clearance.
+
 - 2026-11-20: D68 inset routes use physical-page anchors and text-bearing catchword ownership; auto leading follows source paragraphs, refits are bounded, band origins are incremental, and following feet retain catchword baseline rhythm (#2873).
 
 - 2026-11-20: newly starting commentary notes translate wrap obstacles from their placed baseline origin, keeping widened lines clear of per-stream catchword rows (#2873).
@@ -52,6 +54,16 @@
 
 - **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).
 
+- 2026-11-19: run-in note continuations preserve all source text when later bands change width; the overlap fallback uses the first part's own width.
+
+- **2026-11-19** · Run-in note headings move to the next line when their glyphs would overlap the predecessor or consume its separator space, in RTL and LTR text.
+
+- **2026-11-19** · Run-in notes build on inset-column layout; delayed main starts count shared physical baselines once. IDML warns when effective run-in notes become separate footnotes.
+
+- **2026-11-19** · Hidden run-in note bodies retain their join separator without numbers in column feet and stream frames.
+
+- **2026-11-19** · Run-in note series and per-note overrides continue comments in one paragraph while retaining anchors, split ranges and editing addresses. Margin reference baselines take precedence. See [run-in notes](docs/run-in-notes.md).
+- **2026-11-18** · Note series can hide the body number and separator with `bodyHidden`, independently of the reference (#2872). Native files retain the option; IDML warns before restoring ordinary footnote labels.
 - **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.
 - 2026-11-19: run-in note continuations preserve all source text when later bands change width; the overlap fallback uses the first part's own width.
 

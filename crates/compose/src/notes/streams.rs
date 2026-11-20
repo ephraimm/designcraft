@@ -487,3 +487,89 @@ impl StreamComposer {
         out.frames.extend(frames);
     }
 }
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use designcraft_geom::{Affine, Shape};
+
+    #[test]
+    fn run_in_drop_cap_band_origin_keeps_glyph_ink_clear_of_exclusion() {
+        let mut doc = Document::new(&Default::default());
+        doc.footnote_options.run_in = true;
+        doc.footnote_options.body_hidden = true;
+        doc.footnote_options.space_between = 7.0;
+        let (_, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(0.0, 120.0, 300.0, 600.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        let story = doc.story_mut(sid).unwrap();
+        for text in ["Rashi commentary words. ".repeat(16), "Next comment.".into()] {
+            story.insert_note(story.len(), &text, Default::default()).unwrap();
+        }
+        let text = &mut Arc::make_mut(&mut story.notes[0]).text;
+        text.format_paras(0..text.len(), |p| {
+            p.para.drop_cap_chars = Some(1);
+            p.para.drop_cap_lines = Some(3);
+        });
+        let mut frame = crate::frame_specs(&doc, sid).remove(0);
+        let obstacle = Rect::new(0.0, 40.0, 220.0, 140.0);
+        frame.exclusions.push(crate::Exclusion {
+            rect: obstacle,
+            mode: designcraft_doc::WrapMode::BoundingBox,
+            side: designcraft_doc::WrapSide::BothSides,
+            contour: None,
+            after: None,
+            anchor_baseline: None,
+        });
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        let previous = (60.0, super::super::NoteMetrics::default());
+        notes.band_previous = Some(previous);
+        notes.band_column = Some((1, 0));
+        let column = NoteColumn { frame_index: 1, column_index: 0, width: 300.0, frame: &frame };
+        let opts = ComposeOptions { note_bands: true, ..Default::default() };
+        super::super::ORIGIN_LAST.with(|n| n.set(None));
+        notes.place(&doc, 0, column, &opts);
+        let obstacle_origin = super::super::ORIGIN_LAST.with(|n| n.get()).unwrap();
+        assert!(notes.placed[0].text.frames[0].lines.iter().any(|l| l.drop_cap.is_some()));
+        notes.place(&doc, 1, column, &opts);
+        let run_in_origin = super::super::ORIGIN_LAST.with(|n| n.get()).unwrap();
+        assert!((notes.placed[1].m.lead + doc.footnote_options.space_between).abs() < 0.01, "must exercise a shared run-in baseline");
+        let mut placement_previous = Some((previous.0, previous.0, previous.1));
+        let placed = placed_parts(
+            &doc,
+            doc.story(sid).unwrap(),
+            &notes,
+            &notes.placed,
+            frame.area,
+            0,
+            true,
+            None,
+            &mut placement_previous,
+            &mut HashMap::new(),
+        );
+        let db = designcraft_fonts::FontDb::global();
+        let mut ink_count = 0;
+        let mut beside = 0;
+        for note in &placed {
+            for line in note.text.frames.iter().flat_map(|f| &f.lines) {
+                for g in line.glyphs.iter().filter(|g| g.visible) {
+                    let outline = db.outline(&g.face, g.gid);
+                    if outline.elements().is_empty() {
+                        continue;
+                    }
+                    let transform =
+                        Affine::translate((note.origin.x + g.x, note.origin.y + line.baseline + g.y)) * Affine::scale_non_uniform(g.sx, g.sy);
+                    let ink = (transform * outline.as_ref().clone()).bounding_box();
+                    ink_count += 1;
+                    if ink.y0 < obstacle.y1 && ink.y1 > obstacle.y0 {
+                        beside += 1;
+                    }
+                    assert!(ink.intersect(obstacle).area() < 0.01, "glyph {:?} ink {ink:?} intersects {obstacle:?}", g.rendered_char);
+                }
+            }
+        }
+        assert!(ink_count > 0 && beside > 0, "must exercise actual ink beside the exclusion");
+        assert!((obstacle_origin - placed[0].origin.y).abs() < 0.01, "obstacle {obstacle_origin}, placed {}", placed[0].origin.y);
+        assert!((run_in_origin - placed[1].origin.y).abs() < 0.01, "obstacle {run_in_origin}, placed {}", placed[1].origin.y);
+    }
+}
