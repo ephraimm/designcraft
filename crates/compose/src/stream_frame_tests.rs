@@ -424,12 +424,12 @@ fn catchword_series_terminal_is_independent_of_host_and_ignored_before_next_page
     let (mut doc, host, _) = commentary(3, 1, 22.0);
     doc.story_mut(host).unwrap().catchword_continuation = Some("Host continuation".into());
     let cs = compose_story(&doc, host, &Default::default());
-    let before = crate::vars::series_catchwords(&doc, &cs, 1);
+    let before = crate::vars::series_catchwords(&doc, &cs, doc.story(host).unwrap(), 1);
     assert!(before.len() > 1);
     let last = *before.last_key_value().unwrap().0;
     assert_eq!(before[&last], "");
     doc.note_series[0].options.catchword_continuation = Some("Series continuation".into());
-    let after = crate::vars::series_catchwords(&doc, &cs, 1);
+    let after = crate::vars::series_catchwords(&doc, &cs, doc.story(host).unwrap(), 1);
     assert_eq!(after[&last], "Series continuation");
     for (page, word) in &before {
         if *page != last {

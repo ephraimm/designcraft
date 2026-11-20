@@ -165,7 +165,7 @@ fn compose_cell(
     page: Option<usize>,
     start: NoteNumber,
 ) -> CellLayout {
-    let mut spec = FrameSpec {
+    let spec = FrameSpec {
         inset_top: None,
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
