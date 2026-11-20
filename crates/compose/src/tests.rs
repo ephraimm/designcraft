@@ -12281,7 +12281,12 @@ fn integration_split_body_cell_and_margin_notes_keep_their_sources_and_numbers()
         name: "Sources".into(),
         options: designcraft_doc::FootnoteOptions {
             style: designcraft_doc::NumberStyle::LowerLetters,
-            placement: designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Outside, gap: 8.0, width: 72.0 },
+            placement: designcraft_doc::NotePlacement::Margin {
+                side: designcraft_doc::MarginSide::Outside,
+                gap: 8.0,
+                width: 72.0,
+                stack: Default::default(),
+            },
             ..Default::default()
         },
     });
@@ -12907,7 +12912,8 @@ fn indexed_wrap_neighbours_use_displayed_running_and_xref_text() {
 #[test]
 fn margin_footnote_columns_are_ignored() {
     let (mut d, sid, _) = doc_with("Body reference.", Rect::new(72.0, 72.0, 400.0, 600.0), ParaAttrs::default());
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 120.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 120.0, stack: Default::default() };
     d.story_mut(sid).unwrap().insert_note(4, &"Source detail. ".repeat(12), ParaFormat::default());
     let a = compose_story(&d, sid, &ComposeOptions::default());
     d.footnote_options.columns = 2;

@@ -222,7 +222,8 @@ fn run_in_stream_frame_and_new_area() {
 
 #[test]
 fn run_in_margin_respects_the_reference_baseline() {
-    let (mut doc, sid) = sample(NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: 160.0 });
+    let (mut doc, sid) =
+        sample(NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: 160.0, stack: Default::default() });
     let story = doc.story_mut(sid).unwrap();
     let at = story.note_anchor(story.notes[1].id).unwrap();
     story.insert(at, "\nNext body line");
@@ -237,7 +238,7 @@ fn run_in_margin_respects_the_reference_baseline() {
 
 #[test]
 fn run_in_margin_group_stays_together_in_the_page_stack() {
-    let (doc, sid) = sample(NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: 220.0 });
+    let (doc, sid) = sample(NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: 220.0, stack: Default::default() });
     let cs = crate::compose_story(&doc, sid, &Default::default());
     let ns = notes(&cs);
     assert_eq!(ns.len(), 3);
@@ -247,7 +248,8 @@ fn run_in_margin_group_stays_together_in_the_page_stack() {
 
 #[test]
 fn run_in_margin_overflow_is_reported_per_note() {
-    let (mut doc, sid) = sample(NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: 220.0 });
+    let (mut doc, sid) =
+        sample(NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: 220.0, stack: Default::default() });
     let story = doc.story_mut(sid).unwrap();
     let id = story.notes[2].id;
     story.note_mut(id).unwrap().text = Story::with_text(designcraft_doc::StoryId(0), &"Long commentary. ".repeat(600), Default::default());
@@ -342,8 +344,12 @@ fn bold_run_in_after_predecessor(rtl: bool, long: bool) {
         let separate = crate::compose_story(&doc, sid, &Default::default());
         let separate = notes(&separate);
         let width = |n: &PlacedNote| n.text.frames[0].lines[0].glyphs.iter().map(|g| g.adv).sum::<f64>();
-        doc.footnote_options.placement =
-            NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: width(separate[0]) + width(separate[1]) * 0.5 };
+        doc.footnote_options.placement = NotePlacement::Margin {
+            side: designcraft_doc::MarginSide::Right,
+            gap: 10.0,
+            width: width(separate[0]) + width(separate[1]) * 0.5,
+            stack: Default::default(),
+        };
         doc.footnote_options.run_in = true;
     }
     let cs = crate::compose_story(&doc, sid, &Default::default());

@@ -1250,7 +1250,7 @@ mod tests {
     #[test]
     fn band_origin_queries_do_not_walk_preceding_parts() {
         let (doc, sid, frame) = band_fixture("Note");
-        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false, None);
         notes.band_column = Some((1, 0));
         notes.band_previous = Some((0.0, NoteMetrics::default()));
         for k in 0..100 {
@@ -1292,7 +1292,7 @@ mod tests {
             after: None,
             anchor_baseline: None,
         });
-        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false, None);
         notes.band_column = Some((1, 0));
         notes.band_previous = Some((30.0, NoteMetrics::default()));
         ORIGIN_LAST.with(|n| n.set(None));

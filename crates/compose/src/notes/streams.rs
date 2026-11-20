@@ -521,7 +521,7 @@ mod origin_tests {
             after: None,
             anchor_baseline: None,
         });
-        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false, None);
         let previous = (60.0, super::super::NoteMetrics::default());
         notes.band_previous = Some(previous);
         notes.band_column = Some((1, 0));
