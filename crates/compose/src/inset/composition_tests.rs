@@ -288,7 +288,7 @@ fn follower_clears_lowest_commentary_catchword() {
         story: sid,
         series: 2,
         catchword: false.into(),
-        follow_inset: Some(designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: None }),
+        follow_inset: Some(designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: None }.into()),
     });
     // Series 2 is routed rather than inset.
     for frame in doc.story(sid).unwrap().frames.clone() {
@@ -403,7 +403,7 @@ fn follow_inset_reuses_candidate_main_layout() {
     compose_story(&doc, sid, &Default::default());
     let ordinary = super::fitting::MAIN_LAYOUTS.with(|n| n.get());
     let follow = designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: None };
-    doc.item_mut(routes[0]).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset = Some(follow);
+    doc.item_mut(routes[0]).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset = Some(follow.into());
     super::fitting::MAIN_LAYOUTS.with(|n| n.set(0));
     compose_story(&doc, sid, &Default::default());
     assert_eq!(super::fitting::MAIN_LAYOUTS.with(|n| n.get()), ordinary);
@@ -447,11 +447,13 @@ fn routed_catchword_follower(styled: bool, after_route: bool, leading: f64) {
         let (id, _) = doc
             .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 800.0), doc.default_layer(), "", Default::default())
             .unwrap();
-        let follow_inset = (series == 3).then(|| designcraft_doc::InsetFollow {
-            edge: designcraft_doc::InsetEdge::Start,
-            gap: 0.0,
-            after: after_route.then(|| designcraft_doc::InsetAfter::Route(routes[0])),
-        });
+        let follow_inset = (series == 3)
+            .then(|| designcraft_doc::InsetFollow {
+                edge: designcraft_doc::InsetEdge::Start,
+                gap: 0.0,
+                after: after_route.then(|| designcraft_doc::InsetAfter::Route(routes[0])),
+            })
+            .map(Into::into);
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
             Some(designcraft_doc::NoteStream { story: sid, series, catchword: (series == 2).into(), follow_inset });
         routes.push(id);
@@ -679,12 +681,14 @@ fn chained_followers_fit_each_route_area_once_per_candidate() {
     compose_story(&doc, sid, &Default::default());
     let ordinary = super::fitting::ROUTE_AREAS.with(|n| n.get());
     for (i, id) in routes.iter().enumerate() {
-        doc.item_mut(*id).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset =
-            Some(designcraft_doc::InsetFollow {
+        doc.item_mut(*id).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset = Some(
+            designcraft_doc::InsetFollow {
                 edge: designcraft_doc::InsetEdge::Start,
                 gap: 0.0,
                 after: i.checked_sub(1).map(|p| designcraft_doc::InsetAfter::Route(routes[p])),
-            });
+            }
+            .into(),
+        );
     }
     super::fitting::ROUTE_AREAS.with(|n| n.set(0));
     compose_story(&doc, sid, &Default::default());
@@ -1512,19 +1516,22 @@ fn route_dependency_chain_validation_visits_each_frame_once() {
         .map(|i| {
             let mut frame = prototype.clone();
             frame.id = ItemId(10_000 + i);
-            frame.opts.note_stream.as_mut().unwrap().follow_inset = Some(designcraft_doc::InsetFollow {
-                edge: designcraft_doc::InsetEdge::Start,
-                gap: 0.0,
-                after: i.checked_sub(1).map(|previous| designcraft_doc::InsetAfter::Route(ItemId(10_000 + previous))),
-            });
+            frame.opts.note_stream.as_mut().unwrap().follow_inset = Some(
+                designcraft_doc::InsetFollow {
+                    edge: designcraft_doc::InsetEdge::Start,
+                    gap: 0.0,
+                    after: i.checked_sub(1).map(|previous| designcraft_doc::InsetAfter::Route(ItemId(10_000 + previous))),
+                }
+                .into(),
+            );
             frame
         })
         .collect();
     super::fitting::DEPENDENCY_VISITS.with(|n| n.set(0));
     let dependencies = super::fitting::route_dependencies(&areas);
-    assert_eq!(dependencies[0], None);
+    assert_eq!(dependencies[0], vec![None]);
     for (index, dependency) in dependencies.iter().enumerate().skip(1) {
-        assert_eq!(*dependency, Some(Some(index - 1)));
+        assert_eq!(*dependency, vec![Some(Some(index - 1))]);
     }
     assert!(super::fitting::DEPENDENCY_VISITS.with(|n| n.get()) <= areas.len(), "visits: {}", super::fitting::DEPENDENCY_VISITS.with(|n| n.get()));
 }
@@ -1695,11 +1702,13 @@ fn hostless_route_catchword_sets_follower_baseline_pitch() {
         let (id, _) = doc
             .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 36.0 + height), doc.default_layer(), "", Default::default())
             .unwrap();
-        let follow_inset = (page == 1 && series == 3).then(|| designcraft_doc::InsetFollow {
-            edge: designcraft_doc::InsetEdge::Start,
-            gap: 0.0,
-            after: Some(designcraft_doc::InsetAfter::Route(ids[2])),
-        });
+        let follow_inset = (page == 1 && series == 3)
+            .then(|| designcraft_doc::InsetFollow {
+                edge: designcraft_doc::InsetEdge::Start,
+                gap: 0.0,
+                after: Some(designcraft_doc::InsetAfter::Route(ids[2])),
+            })
+            .map(Into::into);
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
             Some(designcraft_doc::NoteStream { story: sid, series, catchword: (series == 2).into(), follow_inset });
         ids.push(id);
