@@ -25,7 +25,7 @@ use designcraft_doc::{Document, FOOTNOTE_REF, Footnote, ItemId, Story, TextFrame
 use designcraft_geom::{Point, Rect};
 
 use crate::shape::{Glyph, SubstCtx};
-use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, PlacedNote};
+use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, FrameText, PlacedNote};
 
 /// Where a placed footnote comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
