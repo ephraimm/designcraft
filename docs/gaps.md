@@ -75,6 +75,7 @@ reference form, and IDML warns about their loss (#2871).
 
 ### 4. Composition isn't compared with InDesign (T)
 - **Inset columns:** the multi-stream band rule, positioned/mirrored frame option, whole-line page fitting and incremental re-fit are implemented (#2873). Each physical page shares one commentary route fit across all host visits. Routes can follow all inset streams' catchword rows, or an earlier route's composed bottom. Optional styled catchwords align to the paragraph line end in inset streams and the last opted-in route frame of each continuing series; see [inset-columns.md](inset-columns.md).
+- **Have:** optional `lastLineMinFill` retries short final lines within the paragraph's spacing ranges. It can absorb a runt when the original line count has no valid solution; a bounded search falls back to the original breaks.
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
   frame fit. Known differences: optical kerning is an outline-based approximation, not Adobe's

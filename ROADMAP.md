@@ -3,6 +3,8 @@
 - 2026-11-18: table rows support Keep with Next Row and Start Row through `table.rowOptions`; kept groups reserve their cell footnotes before fitting (#2353 integration).
 
 - 2026-11-18: independent balanced footnote columns and gutter, including spanning note areas and a safe narrow-area fallback (#1120).
+- 2026-11-20: `lastLineMinFill` retries short paragraph endings within justification ranges, keeping the line count when possible. Paragraph overrides and styles retain it in native files; IDML export warns that it is omitted.
+
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
 - 2026-11-19: the last routed frame of a series uses that series' continuation text at the excerpt end; clearing it removes the terminal catchword (#2869).
 
