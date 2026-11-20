@@ -165,7 +165,8 @@ fn compose_cell(
     page: Option<usize>,
     start: NoteNumber,
 ) -> CellLayout {
-    let spec = FrameSpec {
+    let mut spec = FrameSpec {
+        inset_top: None,
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
         opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },

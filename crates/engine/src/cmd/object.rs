@@ -7392,8 +7392,27 @@ mod frame_baseline_grid_tests {
         assert_ne!(copied_series, series);
         assert!(dst.story(copied_sid).unwrap().notes.iter().any(|n| n.series == copied_series));
         assert_eq!(
-            dst.item(copies[1]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap().follow_inset.unwrap().after,
+            dst.item(copies[1]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap().follow_inset.as_ref().unwrap().rules()[0].after,
             Some(designcraft_doc::InsetAfter::Margin { frame: copies[0], series: copied_series })
+        );
+        let rules = json!([{"edge":"start","gap":0.0,"after":after},{"edge":"end","gap":80.0,"after":after}]);
+        s.execute("textFrame.options", &json!({"ids":[foot.0],"noteStream":{"story":sid.0,"series":2,"followInset":rules}})).unwrap();
+        let source = &s.doc().unwrap().doc;
+        let back = designcraft_format::load(&designcraft_format::save(source).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&back.item(foot).unwrap().text_frame().unwrap().options.note_stream).unwrap()["followInset"], rules);
+        let mut dst = Document::new(&Default::default());
+        dst.note_series.push(designcraft_doc::NoteSeries { id: series, name: "Unrelated".into(), options: Default::default() });
+        let copies = duplicate_from(&mut dst, source, &[host, foot], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
+        let copied_series = dst.note_series.iter().find(|s| s.name == "Margin").unwrap().id;
+        let stream = dst.item(copies[1]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap();
+        assert!(
+            stream
+                .follow_inset
+                .as_ref()
+                .unwrap()
+                .rules()
+                .iter()
+                .all(|r| r.after == Some(designcraft_doc::InsetAfter::Margin { frame: copies[0], series: copied_series }))
         );
     }
 
@@ -7611,7 +7630,7 @@ mod frame_baseline_grid_tests {
         let dst = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
         let copies = duplicate_from(dst, &source, &[host, column, foot], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
         let copied = dst.item(copies[2]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap();
-        assert!(copied.follow_inset.as_ref().unwrap().rules().iter().all(|r| r.after == Some(copies[1])));
+        assert!(copied.follow_inset.as_ref().unwrap().rules().iter().all(|r| r.after == Some(designcraft_doc::InsetAfter::Route(copies[1]))));
     }
 
     #[test]
