@@ -191,7 +191,8 @@ pub(crate) fn fit_stream_page_dynamic(
             if !opts.note_bands {
                 *previous = None;
             }
-            notes.band_previous = previous.map(|(baseline, _, _)| baseline);
+            notes.band_previous = previous.map(|(baseline, _, metrics)| (baseline, metrics));
+            notes.band_column = opts.note_bands.then_some((fi.saturating_add(1), ci));
             let placed_start = notes.placed.len();
             notes.band_span = opts.note_bands.then_some(area.height());
             notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
@@ -289,9 +290,7 @@ fn placed_parts(
         let y = if bands && first && part.part > 0 && previous.is_some() {
             area.y0
         } else {
-            previous.map_or(area.y0 + o.space_before + part.m.top_padding(), |(baseline, _, metrics)| {
-                baseline + o.space_between + metrics.advance_to(part.m) - part.m.first
-            })
+            part.m.origin(area.y0, previous.map(|(baseline, _, metrics)| (baseline, metrics)), o.space_before, o.space_between)
         };
         let bottom = y + part.m.last + part.m.descent;
         let top = if first {

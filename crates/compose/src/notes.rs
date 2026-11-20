@@ -81,6 +81,27 @@ pub(crate) struct NoteMetrics {
 }
 
 impl NoteMetrics {
+    fn from_frame(frame: &FrameText, owner: usize, run_in: Option<&RunIn>, space_between: f64, first_part: bool) -> Option<Self> {
+        let a = frame.lines.first()?;
+        let z = frame.lines.last()?;
+        let cap = frame.lines.iter().filter_map(|l| l.drop_cap).map(|c| (c.rect.y0, c.rect.y1)).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+        Some(Self {
+            owner: if z.para == 0 { run_in.map_or(owner, |run| run.owner) } else { owner },
+            first: a.baseline,
+            last: z.baseline,
+            lead: if first_part { run_in.map_or(a.leading, |run| if run.inline { 0.0 } else { a.leading } - space_between) } else { a.leading },
+            ascent: a.ascent,
+            descent: cap.map_or(z.descent, |(_, bottom)| z.descent.max(bottom - z.baseline)),
+            cap,
+        })
+    }
+
+    /// Obstacles and final placement must share the resolved run-in and drop-cap origin.
+    fn origin(self, top: f64, previous: Option<(f64, Self)>, space_before: f64, space_between: f64) -> f64 {
+        previous
+            .map_or(top + space_before + self.top_padding(), |(baseline, metrics)| baseline + space_between + metrics.advance_to(self) - self.first)
+    }
+
     fn top_padding(self) -> f64 {
         self.cap.map_or(0.0, |(top, _)| (-top).max(0.0))
     }
@@ -228,7 +249,8 @@ pub(super) struct SeriesNotes {
     series: u64,
     nested: bool,
     direction: designcraft_doc::TextDirection,
-    band_previous: Option<f64>,
+    band_previous: Option<(f64, NoteMetrics)>,
+    band_column: Option<(usize, usize)>,
     band_continued: bool,
     band_span: Option<f64>,
     band_spans: HashMap<(usize, usize), f64>,
@@ -265,6 +287,7 @@ impl SeriesNotes {
             nested,
             direction: story.direction,
             band_previous: None,
+            band_column: None,
             band_continued: false,
             band_span: None,
             band_spans: HashMap::new(),
@@ -353,6 +376,24 @@ impl SeriesNotes {
             }
         }
         v
+    }
+
+    /// New notes keep the preceding baseline; their origin can precede the band's top.
+    /// Wrapping obstacles must use this same origin, including for split-part replay.
+    fn band_note_origin(&self, doc: &Document, f: &FrameSpec, metrics: NoteMetrics) -> f64 {
+        let o = doc.note_options(self.series);
+        let mut previous = self.band_previous;
+        let mut at_start = true;
+        for part in self.placed.iter().filter(|p| self.band_column == Some((p.fi, p.col))) {
+            let y = if at_start && part.part > 0 && previous.is_some() {
+                f.area.y0
+            } else {
+                part.m.origin(f.area.y0, previous, o.space_before, o.space_between)
+            };
+            previous = Some((y + part.m.last, part.m));
+            at_start = false;
+        }
+        metrics.origin(f.area.y0, previous, o.space_before, o.space_between)
     }
 
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> Part {
@@ -543,7 +584,26 @@ impl SeriesNotes {
             first.para.drop_cap_chars = Some(0);
             first.para.list_type = Some(designcraft_doc::ListType::None);
         }
-        let cs = crate::compose(doc, &text, &specs, &nopts);
+        let mut cs = crate::compose(doc, &text, &specs, &nopts);
+        if opts.note_bands
+            && part == 0
+            && !f.exclusions.is_empty()
+            && let Some(metrics) = cs.frames.first().and_then(|frame| NoteMetrics::from_frame(frame, k, run_in, o.space_between, true))
+        {
+            let origin = self.band_note_origin(doc, f, metrics);
+            let delta = f.area.y0 - origin;
+            if delta.abs() > 0.01 {
+                let mut positioned = specs.clone();
+                if let Some(first) = positioned.first_mut() {
+                    for exclusion in &mut first.exclusions {
+                        exclusion.rect = exclusion.rect + designcraft_geom::Vec2::new(0.0, delta);
+                        exclusion.contour =
+                            exclusion.contour.as_ref().map(|c| c.clone().transformed(designcraft_geom::Affine::translate((0.0, delta))));
+                    }
+                }
+                cs = crate::compose(doc, &text, &positioned, &nopts);
+            }
+        }
         // A replay's first part keeps its original width, even when the current band narrows.
         // Testing it against the current width could change an already emitted source cut.
         let first_width = specs.first().map_or(w, |spec| spec.area.width());
@@ -572,17 +632,7 @@ impl SeriesNotes {
             .iter()
             .enumerate()
             .map(|(i, ft)| {
-                let (Some(a), Some(z)) = (ft.lines.first(), ft.lines.last()) else { return None };
-                let cap = ft.lines.iter().filter_map(|l| l.drop_cap).map(|c| (c.rect.y0, c.rect.y1)).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
-                let m = NoteMetrics {
-                    owner: if z.para == 0 { run_in.map_or(k, |run| run.owner) } else { k },
-                    first: a.baseline,
-                    last: z.baseline,
-                    lead: if i == 0 { run_in.map_or(a.leading, |run| if run.inline { 0.0 } else { a.leading } - o.space_between) } else { a.leading },
-                    ascent: a.ascent,
-                    descent: cap.map_or(z.descent, |(_, bottom)| z.descent.max(bottom - z.baseline)),
-                    cap,
-                };
+                let m = NoteMetrics::from_frame(ft, k, run_in, o.space_between, i == 0)?;
                 let mut frame = ft.clone();
                 // Body frame ranges exclude paragraph separators; parts own those bytes too.
                 frame.range.end = cs
@@ -793,6 +843,7 @@ impl SeriesNotes {
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
                 let mut exclusions = self.carry.as_ref().filter(|c| c.k == k).map_or_else(Vec::new, |c| c.exclusions.clone());
                 if opts.note_bands {
+                    let origin = if part == 0 { self.band_note_origin(doc, column.frame, original.1) } else { column.frame.area.y0 };
                     exclusions.push((
                         part,
                         column
@@ -800,10 +851,11 @@ impl SeriesNotes {
                             .exclusions
                             .iter()
                             .map(|e| crate::Exclusion {
-                                rect: e.rect + designcraft_geom::Vec2::new(-column.frame.area.x0, -column.frame.area.y0),
-                                contour: e.contour.as_ref().map(|c| {
-                                    c.clone().transformed(designcraft_geom::Affine::translate((-column.frame.area.x0, -column.frame.area.y0)))
-                                }),
+                                rect: e.rect + designcraft_geom::Vec2::new(-column.frame.area.x0, -origin),
+                                contour: e
+                                    .contour
+                                    .as_ref()
+                                    .map(|c| c.clone().transformed(designcraft_geom::Affine::translate((-column.frame.area.x0, -origin)))),
                                 ..e.clone()
                             })
                             .collect(),
@@ -888,7 +940,7 @@ impl SeriesNotes {
         let o = doc.note_options(self.series);
         match (self.band_previous, ms.first()) {
             (Some(_), _) if self.band_continued => 0.0,
-            (Some(previous), Some(m)) => previous + o.space_between + m.lead - m.first - column.frame.area.y0,
+            (Some((previous, _)), Some(m)) => previous + o.space_between + m.lead - m.first - column.frame.area.y0,
             _ => o.space_before,
         }
     }

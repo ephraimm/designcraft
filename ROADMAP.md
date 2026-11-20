@@ -9,6 +9,8 @@
 - 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).
 
 - 2026-11-19: each note series has an independent `catchwordContinuation`, with command validation, native persistence and an IDML loss warning. Story continuation remains main-stream-only (#2869).
+- 2026-11-20: newly starting commentary notes translate wrap obstacles from their placed baseline origin, keeping widened lines clear of per-stream catchword rows (#2873).
+
 - 2026-11-20: catchword styles in hosts, routes, series and object styles follow character-style rename and replacement in one undo step (#2873).
 
 - 2026-11-20: inset route dependencies use one frame-ID index and memoized chain validation, with a linear visit regression (#2873).
