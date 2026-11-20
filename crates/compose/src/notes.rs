@@ -51,6 +51,13 @@ pub(crate) mod streams;
 pub use streams::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
 pub(crate) use streams::{fit_stream_page_dynamic, fit_stream_page_for};
 
+#[cfg(test)]
+thread_local! {
+    static ORIGIN_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ORIGIN_LAST: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+    static ORIGIN_RECHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A footnote assigned to a column.
 pub(crate) struct Placed {
     part: usize,
@@ -250,7 +257,9 @@ pub(super) struct SeriesNotes {
     nested: bool,
     direction: designcraft_doc::TextDirection,
     band_previous: Option<(f64, NoteMetrics)>,
+    route_first_baseline: Option<f64>,
     band_column: Option<(usize, usize)>,
+    band_last: Option<(f64, NoteMetrics)>,
     band_continued: bool,
     band_span: Option<f64>,
     band_spans: HashMap<(usize, usize), f64>,
@@ -287,7 +296,9 @@ impl SeriesNotes {
             nested,
             direction: story.direction,
             band_previous: None,
+            route_first_baseline: None,
             band_column: None,
+            band_last: None,
             band_continued: false,
             band_span: None,
             band_spans: HashMap::new(),
@@ -941,6 +952,7 @@ impl SeriesNotes {
         match (self.band_previous, ms.first()) {
             (Some(_), _) if self.band_continued => 0.0,
             (Some((previous, _)), Some(m)) => previous + o.space_between + m.lead - m.first - column.frame.area.y0,
+            (_, Some(first)) => self.route_first_baseline.map_or(o.space_before, |baseline| baseline - first.first),
             _ => o.space_before,
         }
     }
@@ -1209,6 +1221,77 @@ pub(crate) use page_margins::stack_page_margins;
 mod tests {
     use super::*;
     use designcraft_doc::{ParaFormat, SpreadRef, build::NewDocument, story};
+
+    fn band_fixture(text: &str) -> (Document, designcraft_doc::StoryId, FrameSpec) {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.footnote_options.first_baseline = designcraft_doc::FirstBaseline::Ascent;
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 120.0, 300.0, 1000.0), doc.default_layer(), "Body", Default::default()).unwrap();
+        doc.story_mut(sid).unwrap().insert_note(0, text, Default::default()).unwrap();
+        let frame = crate::frame_specs(&doc, sid).remove(0);
+        (doc, sid, frame)
+    }
+
+    #[test]
+    fn band_origin_queries_do_not_walk_preceding_parts() {
+        let (doc, sid, frame) = band_fixture("Note");
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        notes.band_column = Some((1, 0));
+        notes.band_previous = Some(0.0);
+        for k in 0..100 {
+            notes.push(
+                &doc,
+                k,
+                0,
+                Arc::new(ComposedStory::default()),
+                NoteMetrics { first: 10.0, last: 10.0, lead: 12.0, descent: 2.0 },
+                NoteColumn { frame_index: 1, column_index: 0, width: 300.0, frame: &frame },
+            );
+        }
+        ORIGIN_VISITS.with(|n| n.set(0));
+        for _ in 0..128 {
+            assert_eq!(notes.band_note_origin(&doc, &frame, 10.0, 12.0), 1202.0);
+        }
+        assert!(ORIGIN_VISITS.with(|n| n.get()) <= 128, "origin visits {}", ORIGIN_VISITS.with(|n| n.get()));
+    }
+
+    #[test]
+    fn band_origin_is_rechecked_when_wrap_changes_first_line_leading() {
+        let (mut doc, sid, mut frame) = band_fixture("aa aa LARGE trailing words");
+        let text = &mut Arc::make_mut(&mut doc.story_mut(sid).unwrap().notes[0]).text;
+        text.format_chars(0..text.len(), |f| {
+            f.over.size = Some(12.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(14.4));
+        });
+        let at = text.text.find("LARGE").unwrap();
+        text.format_chars(at..at + 5, |f| {
+            f.over.size = Some(30.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(80.0));
+            f.over.no_break = Some(true);
+        });
+        frame.exclusions.push(crate::Exclusion {
+            rect: Rect::new(0.0, -100.0, 230.0, 120.0),
+            mode: designcraft_doc::WrapMode::BoundingBox,
+            side: designcraft_doc::WrapSide::BothSides,
+            contour: None,
+            after: None,
+            anchor_baseline: None,
+        });
+        let mut notes = SeriesNotes::new(&doc, doc.story(sid).unwrap(), 0, false);
+        notes.band_column = Some((1, 0));
+        notes.band_previous = Some(30.0);
+        ORIGIN_LAST.with(|n| n.set(None));
+        ORIGIN_RECHECKS.with(|n| n.set(0));
+        let part = notes.compose(&doc, 0, 300.0, &frame, &ComposeOptions { note_bands: true, ..Default::default() });
+        assert!((part.1.lead - 14.4).abs() < 0.01, "first leading {}", part.1.lead);
+        let expected = notes.band_note_origin(&doc, &frame, part.1.first, part.1.lead);
+        assert!(
+            (ORIGIN_LAST.with(|n| n.get()).unwrap() - expected).abs() < 0.01,
+            "shifted origin {:?}, final origin {expected}",
+            ORIGIN_LAST.with(|n| n.get())
+        );
+        assert!(ORIGIN_RECHECKS.with(|n| n.get()) <= 2);
+    }
 
     #[test]
     fn note_part_stops_at_unplaceable_later_drop_word() {
