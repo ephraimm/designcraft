@@ -251,6 +251,11 @@ fn append_note(notes: &mut Vec<PlacedNote>, note: PlacedNote) {
     }
     notes.push(note);
 }
+/// Shared by final margin placement and inset trials; no gap precedes the first entry.
+pub(crate) fn top_margin_entry(top: f64, previous: Option<f64>, height: f64, spacing: f64) -> (f64, f64) {
+    let y = previous.map_or(top, |bottom| bottom + spacing);
+    (y, y + height)
+}
 
 pub(super) struct SeriesNotes {
     series: u64,

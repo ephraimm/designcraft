@@ -4,7 +4,7 @@ use super::{
     Arc, CellNote, ComposeOptions, ComposedStory, Document, FrameSpec, Glyph, HashMap, HashSet, NoteColumn, NoteNumber, PlacedNote, Point, Range,
     Rect, SeriesNotes, SeriesSnapshot, Story, SubstCtx, stack_height,
 };
-use designcraft_doc::{MarginSide, NotePlacement};
+use designcraft_doc::{MarginSide, MarginStack, NotePlacement};
 
 #[derive(Clone)]
 pub(crate) struct NoteSnapshot {
@@ -322,9 +322,17 @@ impl Notes {
                 }
             }
         }
-        refs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.5.cmp(&b.5)));
+        // Top stacks keep source order even when a later column has an earlier baseline.
+        let top_order = |si: usize, k: usize| {
+            matches!(doc.note_options(self.series[si].series).placement, NotePlacement::Margin { stack: MarginStack::Top, .. }).then_some((si, k))
+        };
+        refs.sort_by(|a, b| {
+            let (at, bt) = (top_order(a.4, a.5), top_order(b.4, b.5));
+            a.0.cmp(&b.0).then(at.is_none().cmp(&bt.is_none())).then(at.cmp(&bt)).then(a.1.total_cmp(&b.1)).then(a.5.cmp(&b.5))
+        });
         let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
         let mut previous_margin: HashMap<(usize, bool), (usize, usize, Arc<ComposedStory>, f64, usize)> = HashMap::new();
+        let mut top_bottoms = HashMap::new();
         let mut seen = HashSet::new();
         for (page_index, _, fi, li, si, k) in refs {
             if !seen.insert((si, k)) {
@@ -334,7 +342,7 @@ impl Notes {
             let o = doc.note_options(s.series);
             let f = &frames[fi];
             let baseline = out.frames[fi].lines[li].baseline;
-            if let NotePlacement::Margin { side, gap, width } = o.placement {
+            if let NotePlacement::Margin { side, gap, width, stack } = o.placement {
                 let Some((page, margin)) = f.page_rect else { continue };
                 if !width.is_finite() || width <= 0.0 || !gap.is_finite() || gap < 0.0 {
                     continue;
@@ -345,21 +353,31 @@ impl Notes {
                     MarginSide::Inside => !f.left_page,
                     MarginSide::Outside => f.left_page,
                 };
-                let previous = previous_margin.get(&(page_index, left)).filter(|(prev_si, _, _, _, prev_fi)| *prev_si == si && *prev_fi == fi);
-                let run = s.run_in(doc, k, width, previous.map(|(_, pk, text, _, _)| (*pk, text.as_ref())));
-                let column = NoteColumn { frame_index: fi, column_index: 0, width, frame: f };
-                let (mut text, mut m) = s.compose_with_run(doc, k, column, opts, run.as_ref());
-                let joined_y = previous.zip(run.as_ref()).map(|((_, _, _, last, _), _)| last + o.space_between + m.lead - m.first);
-                // The reference baseline is a hard placement floor, including a run-in first line.
-                let joined_y = joined_y.filter(|y| y + m.first + 0.01 >= baseline);
-                if run.is_some() && joined_y.is_none() {
-                    (text, m) = s.compose(doc, k, width, f, opts);
-                }
-                let requested = baseline - m.first;
-                let y = joined_y.unwrap_or_else(|| {
-                    bottoms.get(&(page_index, left)).map_or(requested, |bottom| requested.max(bottom + page.y0 + o.space_between))
-                });
-                let bottom = y + m.last + m.descent;
+                let (text, m, y, bottom) = if stack == MarginStack::Top {
+                    let (text, m) = s.compose(doc, k, width, f, opts);
+                    let height = text.frames.iter().flat_map(|f| &f.lines).map(|l| l.baseline + l.descent).fold(m.last + m.descent, f64::max);
+                    let key = (f.id, s.series);
+                    let placed = super::top_margin_entry(margin.y0, top_bottoms.get(&key).copied(), height, o.space_between);
+                    top_bottoms.insert(key, placed.1);
+                    (text, m, placed.0, placed.1)
+                } else {
+                    let previous = previous_margin.get(&(page_index, left)).filter(|(prev_si, _, _, _, prev_fi)| *prev_si == si && *prev_fi == fi);
+                    let run = s.run_in(doc, k, width, previous.map(|(_, pk, text, _, _)| (*pk, text.as_ref())));
+                    let column = NoteColumn { frame_index: fi, column_index: 0, width, frame: f };
+                    let (mut text, mut m) = s.compose_with_run(doc, k, column, opts, run.as_ref());
+                    let joined_y = previous.zip(run.as_ref()).map(|((_, _, _, last, _), _)| last + o.space_between + m.lead - m.first);
+                    // The reference baseline is a hard placement floor, including a run-in first line.
+                    let joined_y = joined_y.filter(|y| y + m.first + 0.01 >= baseline);
+                    if run.is_some() && joined_y.is_none() {
+                        (text, m) = s.compose(doc, k, width, f, opts);
+                    }
+                    let requested = baseline - m.first;
+                    let y = joined_y.unwrap_or_else(|| {
+                        bottoms.get(&(page_index, left)).map_or(requested, |bottom| requested.max(bottom + page.y0 + o.space_between))
+                    });
+                    let bottom = y + m.last + m.descent;
+                    (text, m, y, bottom)
+                };
                 bottoms.insert((page_index, left), bottom - page.y0);
                 previous_margin.insert((page_index, left), (si, m.owner, text.clone(), y + m.last, fi));
                 let edge = doc.item(f.id).and_then(|item| item.path.bounds()).unwrap_or(f.area);

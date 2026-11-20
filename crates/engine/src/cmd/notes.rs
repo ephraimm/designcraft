@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji|hebrew|hebrewPlain, startAt?, catchwordStyle?: character style name|null, catchwordContinuation?: string|null (series 0 terminal catchword, at most 256 characters, no controls; null clears), restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, bodyHidden?: bool, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, runIn?: bool (default false), runInSeparator?: string (at most 64 characters), spanColumns?, columns?: 1–4, columnGutter?: 0–144 pt, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji|hebrew|hebrewPlain, startAt?, catchwordStyle?: character style name|null, catchwordContinuation?: string|null (series 0 terminal catchword, at most 256 characters, no controls; null clears), restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, bodyHidden?: bool, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, runIn?: bool (default false), runInSeparator?: string (at most 64 characters), spanColumns?, columns?: 1–4, columnGutter?: 0–144 pt, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Note Series Options",
             [],
             None,
-            "{series, catchwordStyle?: character style name|null, catchwordContinuation?: string|null (at most 256 characters, no controls; null clears), runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, catchwordStyle?: character style name|null, catchwordContinuation?: string|null (at most 256 characters, no controls; null clears), runIn?: bool, runInSeparator?: string (at most 64 characters), …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),
@@ -1208,9 +1208,15 @@ mod margin_default_tests {
         s.execute("file.new", &json!({})).unwrap();
         let o = s.execute("footnote.options", &json!({"placement":{"kind":"margin","gap":8,"width":72}})).unwrap();
         assert_eq!(o["placement"]["side"], "right");
+        assert_eq!(o["placement"]["stack"], "besideAnchor");
         s.execute("footnote.series.create", &json!({"name":"Sources","placement":{"kind":"margin","gap":8,"width":72}})).unwrap();
         let all = s.execute("footnote.series.list", &json!({})).unwrap();
         assert_eq!(all[1]["placement"]["side"], "right");
+        let id = all[1]["id"].as_u64().unwrap();
+        let top = s.execute("footnote.series.options", &json!({"series":id,"placement":{"stack":"top"}})).unwrap();
+        assert_eq!(top["placement"]["stack"], "top");
+        assert_eq!(top["placement"]["width"], 72.0);
+        assert!(s.execute("footnote.series.options", &json!({"series":id,"placement":{"stack":"invalid"}})).is_err());
     }
 }
 

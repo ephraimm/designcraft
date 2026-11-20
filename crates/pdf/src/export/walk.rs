@@ -482,7 +482,8 @@ mod margin_culling_tests {
             name: "Commentary".into(),
             options: designcraft_doc::FootnoteOptions { placement: designcraft_doc::NotePlacement::Stream, ..Default::default() },
         });
-        doc.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+        doc.footnote_options.placement =
+            designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
         let story = doc.story_mut(host).unwrap();
         let id = story.insert_note(0, "Commentary", Default::default()).unwrap();
         let note = story.note_mut(id).unwrap();
