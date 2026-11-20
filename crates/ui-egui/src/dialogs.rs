@@ -8368,7 +8368,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 15] = [
+pub const JUSTIFY_ATTRS: [&str; 16] = [
     "lastLineMinFill",
     "wordSpaceMin",
     "wordSpaceDesired",
